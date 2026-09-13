@@ -1,0 +1,5 @@
+# Only server/ and build/web travel into the image — everything else merely inflates
+# the build context and makes docker rebuild layers for no reason.
+*
+!server/
+!build/web/

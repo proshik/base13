@@ -1,0 +1,121 @@
+extends GutTest
+
+var sim: GameSim
+var cfg: SimConfig
+
+func before_each() -> void:
+	cfg = SimConfig.new()
+	sim = GameSim.new(LevelFixture.empty_level(), 1, cfg, 1, 1)
+
+func _s() -> WorldState:
+	return sim.get_state()
+
+## Places an already materialised enemy away from the spawn points.
+func _park_enemy(pos: Vector2i) -> Entities.Tank:
+	var t := Entities.Tank.new()
+	t.id = _s().next_id()
+	t.type = Types.TankType.BASIC
+	t.player_index = -1
+	t.pos = pos
+	t.speed = cfg.enemy_speed(Types.TankType.BASIC)
+	t.health = 1
+	t.alive = true
+	_s().tanks.append(t)
+	return t
+
+func test_first_enemy_appears_immediately_at_the_first_point() -> void:
+	sim.tick([0, 0])
+	var enemies := _s().enemy_tanks()
+	assert_eq(enemies.size(), 1)
+	assert_eq(enemies[0].pos, Consts.tile_to_unit(Consts.ENEMY_SPAWN_TILES[0]))
+
+func test_new_enemy_blinks_before_it_becomes_real() -> void:
+	sim.tick([0, 0])
+	var e: Entities.Tank = _s().enemy_tanks()[0]
+	assert_eq(e.spawn_ticks, cfg.spawn_blink_ticks)
+	assert_false(e.is_materialized(), "while it blinks it does not physically exist")
+	for i in cfg.spawn_blink_ticks:
+		sim.tick([0, 0])
+	assert_true(e.is_materialized())
+
+func test_spawn_event_is_emitted() -> void:
+	sim.tick([0, 0])
+	var types: Array[int] = []
+	for ev in sim.drain_events():
+		types.append(ev.type)
+	assert_has(types, Types.Event.ENEMY_SPAWNED)
+
+func test_spawn_points_rotate() -> void:
+	var positions: Array[Vector2i] = []
+	for i in 4:
+		_s().spawn_timer = 0
+		sim.tick([0, 0])
+		for t in _s().enemy_tanks():
+			positions.append(t.pos)
+			t.alive = false
+	assert_eq(positions.size(), 4)
+	assert_eq(positions[0], Consts.tile_to_unit(Consts.ENEMY_SPAWN_TILES[0]))
+	assert_eq(positions[1], Consts.tile_to_unit(Consts.ENEMY_SPAWN_TILES[1]))
+	assert_eq(positions[2], Consts.tile_to_unit(Consts.ENEMY_SPAWN_TILES[2]))
+	assert_eq(positions[3], Consts.tile_to_unit(Consts.ENEMY_SPAWN_TILES[0]), "in a cycle")
+
+func test_interval_between_spawns_is_respected() -> void:
+	sim.tick([0, 0])
+	for t in _s().enemy_tanks():
+		t.alive = false
+	for i in cfg.spawn_interval_ticks:
+		sim.tick([0, 0])
+	assert_eq(_s().enemy_tanks().size(), 0, "nobody appears ahead of time")
+	sim.tick([0, 0])
+	assert_eq(_s().enemy_tanks().size(), 1, "a spawn happens on the tick where the timer has already reached zero")
+
+func test_field_limit_is_not_exceeded() -> void:
+	for i in cfg.max_enemies_alive:
+		_park_enemy(Vector2i(Consts.TILE * (i + 2), Consts.TILE * 5))
+	_s().spawn_timer = 0
+	sim.tick([0, 0])
+	assert_eq(_s().enemy_tanks().size(), cfg.max_enemies_alive, "a fifth one does not appear")
+
+func test_spawn_resumes_when_a_slot_frees_up() -> void:
+	var parked: Array = []
+	for i in cfg.max_enemies_alive:
+		parked.append(_park_enemy(Vector2i(Consts.TILE * (i + 2), Consts.TILE * 5)))
+	_s().spawn_timer = 0
+	sim.tick([0, 0])
+	parked[0].alive = false
+	_s().spawn_timer = 0
+	sim.tick([0, 0])
+	assert_eq(_s().enemy_tanks().size(), cfg.max_enemies_alive, "a slot freed up and a new one appeared")
+
+func test_occupied_spawn_point_postpones_the_spawn() -> void:
+	_park_enemy(Consts.tile_to_unit(Consts.ENEMY_SPAWN_TILES[0]))
+	_s().spawn_timer = 0
+	sim.tick([0, 0])
+	assert_eq(_s().enemy_tanks().size(), 1, "nobody spawns on an occupied point")
+
+func test_all_twenty_enemies_eventually_spawn() -> void:
+	var spawned := 0
+	for i in 5000:
+		sim.tick([0, 0])
+		for t in _s().enemy_tanks():
+			t.alive = false
+			spawned += 1
+		_s().spawn_timer = 0
+		if _s().enemy_queue.is_empty():
+			break
+	assert_eq(spawned, 20, "a wave holds exactly twenty enemies")
+	assert_true(_s().enemy_queue.is_empty())
+
+func test_marked_enemies_carry_a_bonus() -> void:
+	# The fixture marks the enemies with indices 3, 10 and 17.
+	var flags: Array[bool] = []
+	for i in 4:
+		_s().spawn_timer = 0
+		sim.tick([0, 0])
+		for t in _s().enemy_tanks():
+			flags.append(t.drops_bonus)
+			t.alive = false
+	assert_false(flags[0])
+	assert_false(flags[1])
+	assert_false(flags[2])
+	assert_true(flags[3], "the fourth enemy in order is marked as carrying a bonus")

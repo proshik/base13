@@ -1,0 +1,62 @@
+# The check on every push.
+#
+# The same ./tools/test.sh as locally: core isolation, server neutrality, atlas and
+# sound verification against the manifests, the Go tests and all the GUT tests headless.
+#
+# There is deliberately no image here. Publishing from every branch would fill up the
+# registry, and the package budget is zero with a hard stop: run out of space and
+# releases stop too. The image is released by hand from master, see release.yml.
+name: ci
+
+on:
+  push:
+  pull_request:
+
+# The engine version in one place: two copies of the line would drift apart, and the
+# difference would surface in the published image, where it is hardest to notice.
+env:
+  GODOT_VERSION: 4.7.2-stable
+
+# A new push to the same branch cancels the previous run: there is no point in keeping
+# a queue of checks that are already out of date.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      # The run forbids downloading a new compiler (GOTOOLCHAIN=local) so that the
+      # build does not depend on somebody else's servers. So the right one must be
+      # installed here.
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26'
+          # No dependency cache is needed: there are zero of them, and the project has
+          # no go.sum.
+          cache: false
+
+      - name: Godot from cache
+        id: godot-cache
+        uses: actions/cache@v6
+        with:
+          path: godot-bin
+          key: godot-${{ env.GODOT_VERSION }}-linux
+
+      - name: Download Godot
+        if: steps.godot-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p godot-bin
+          curl -sL -o godot.zip \
+            "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}/Godot_v${GODOT_VERSION}_linux.x86_64.zip"
+          unzip -q godot.zip -d godot-bin
+          chmod +x godot-bin/Godot_v${GODOT_VERSION}_linux.x86_64
+
+      - name: Run the tests
+        run: |
+          export GODOT="$PWD/godot-bin/Godot_v${GODOT_VERSION}_linux.x86_64"
+          ./tools/test.sh

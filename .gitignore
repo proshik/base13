@@ -1,0 +1,8 @@
+.godot/
+.import/
+*.translation
+build/
+.DS_Store
+.idea/
+.build/
+server/server

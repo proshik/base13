@@ -1,0 +1,203 @@
+# Cutting a release from master — by hand, with a button.
+#
+# By hand rather than on every push: a release is something you hand to someone, and a
+# human should decide when it is ready. It also saves minutes and registry space — the
+# package budget is zero with a hard stop, and filling it with builds from branches
+# would one day leave us unable to publish a real release.
+#
+# The backend and the desktop builds are released separately. Desktop means three
+# exports with texture rebuilds, minutes of work; the backend needs one web build and
+# has to ship often. There is no point in paying for everything every time.
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version without the "v", for example 0.1.0'
+        required: true
+        type: string
+      target:
+        description: 'What to release'
+        required: true
+        default: server
+        type: choice
+        options:
+          - server
+          - desktop
+          - both
+
+env:
+  GODOT_VERSION: 4.7.2-stable
+  REGISTRY: ghcr.io
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      # A release is cut from master and nowhere else: a tag on an arbitrary branch
+      # would look like a real release while containing something unverified.
+      - name: Check that this is master
+        if: github.ref != 'refs/heads/master'
+        run: |
+          echo "ERROR: a release is cut only from master, but this ran from ${{ github.ref }}"
+          exit 1
+
+      - uses: actions/checkout@v7
+
+      # Only the desktop release places a tag — that is what people download.
+      # The backend ships often and takes no git tags.
+      - name: Check that the version is free
+        if: inputs.target != 'server'
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/v${{ inputs.version }}" >/dev/null 2>&1; then
+            echo "ERROR: tag v${{ inputs.version }} already exists. We do not overwrite what was released."
+            exit 1
+          fi
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26'
+          cache: false
+
+      - name: Godot from cache
+        id: godot-cache
+        uses: actions/cache@v6
+        with:
+          path: godot-bin
+          key: godot-${{ env.GODOT_VERSION }}-linux
+
+      - name: Download Godot
+        if: steps.godot-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p godot-bin
+          curl -sL -o godot.zip \
+            "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}/Godot_v${GODOT_VERSION}_linux.x86_64.zip"
+          unzip -q godot.zip -d godot-bin
+          chmod +x godot-bin/Godot_v${GODOT_VERSION}_linux.x86_64
+
+      # The templates are a gigabyte; downloading them every time takes longer than
+      # everything else put together.
+      - name: Export templates from cache
+        id: templates-cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.local/share/godot/export_templates
+          key: godot-templates-${{ env.GODOT_VERSION }}
+
+      - name: Download the export templates
+        if: steps.templates-cache.outputs.cache-hit != 'true'
+        run: |
+          curl -sL -o templates.tpz \
+            "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}/Godot_v${GODOT_VERSION}_export_templates.tpz"
+          unzip -q templates.tpz
+          target="$HOME/.local/share/godot/export_templates/${GODOT_VERSION/-/.}"
+          mkdir -p "$target"
+          mv templates/* "$target/"
+
+      # The build runs the tests itself, which is why there is no separate step here:
+      # two runs for one release are minutes spent for nothing, and we do not have many.
+      # The platform list is one per call for the same reason.
+      - name: Build
+        run: |
+          export GODOT="$PWD/godot-bin/Godot_v${GODOT_VERSION}_linux.x86_64"
+          "$GODOT" --headless --path game --import --quit || true
+          if [ "${{ inputs.target }}" = "server" ]; then
+            ./tools/build.sh Web
+          else
+            ./tools/build.sh Web Windows Linux macOS
+          fi
+
+      - uses: docker/setup-buildx-action@v4
+        if: inputs.target != 'desktop'
+
+      - name: Log in to the registry
+        if: inputs.target != 'desktop'
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish the image
+        if: inputs.target != 'desktop'
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ github.repository }}:${{ inputs.version }}
+            ${{ env.REGISTRY }}/${{ github.repository }}:latest
+            ${{ env.REGISTRY }}/${{ github.repository }}:sha-${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # The published image is checked the same way a hand-built one is: bring it up and
+      # ask it. An image that does not come up is worse than a missing one — it will be
+      # rolled out to a live server.
+      - name: Check the published image
+        if: inputs.target != 'desktop'
+        run: |
+          image="${REGISTRY}/${{ github.repository }}:${{ inputs.version }}"
+          docker run -d --rm --name check -e PORT=27014 -p 27014:27014 "$image"
+          for i in $(seq 1 40); do
+            if curl -fsS --max-time 1 http://127.0.0.1:27014/health; then
+              echo
+              curl -fsS http://127.0.0.1:27014/ | grep -q "BASE 13" \
+                && echo "the game page is served" && docker stop check && exit 0
+              echo "ERROR: the server answers but does not serve the game page"
+              docker stop check; exit 1
+            fi
+            sleep 0.25
+          done
+          echo "ERROR: the image did not answer on /health"
+          docker logs check; docker stop check; exit 1
+
+      - name: Pack the desktop builds
+        if: inputs.target != 'server'
+        run: |
+          mkdir -p dist
+          cd build
+          zip -qr ../dist/base13-${{ inputs.version }}-windows.zip windows
+          zip -qr ../dist/base13-${{ inputs.version }}-linux.zip linux
+          cp macos/base13.zip ../dist/base13-${{ inputs.version }}-macos.zip
+          zip -qr ../dist/base13-${{ inputs.version }}-web.zip web
+          ls -lh ../dist
+
+      - name: Tag and create the release
+        if: inputs.target != 'server'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.version }}
+          IMAGE: ${{ env.REGISTRY }}/${{ github.repository }}
+        run: |
+          # The notes are written as a file rather than a string in the command:
+          # multi-line text inside YAML inside shell breaks on one extra indent.
+          {
+            echo "Builds for Windows, macOS, Linux and the browser are attached to the release."
+            echo
+            echo "The room server — the image in the registry:"
+            echo
+            echo '```'
+            echo "docker pull $IMAGE:$VERSION"
+            echo "docker run -p 27014:27014 $IMAGE:$VERSION"
+            echo '```'
+            echo
+            echo "### macOS"
+            echo
+            echo "The build is signed ad hoc but not notarized — Apple has not checked it."
+            echo "First launch: System Settings -> Privacy & Security -> scroll down to the"
+            echo "message about the blocked application -> \"Open Anyway\"."
+            echo "Once per application. Right-click -> \"Open\" does not work on macOS 15 and newer."
+          } > notes.md
+
+          git tag "v$VERSION"
+          git push origin "v$VERSION"
+          gh release create "v$VERSION" \
+            --title "BASE 13 v$VERSION" \
+            --notes-file notes.md \
+            dist/*.zip

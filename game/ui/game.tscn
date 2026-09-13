@@ -1,0 +1,27 @@
+[gd_scene load_steps=7 format=3]
+
+[ext_resource type="Script" path="res://ui/game.gd" id="1_game"]
+[ext_resource type="Script" path="res://presentation/field.gd" id="2_field"]
+[ext_resource type="Script" path="res://presentation/hud.gd" id="3_hud"]
+[ext_resource type="Script" path="res://presentation/banner.gd" id="4_banner"]
+[ext_resource type="Script" path="res://presentation/audio.gd" id="5_audio"]
+[ext_resource type="Script" path="res://ui/pause.gd" id="6_pause"]
+
+[node name="Game" type="Node2D"]
+script = ExtResource("1_game")
+
+[node name="Field" type="Node2D" parent="."]
+script = ExtResource("2_field")
+
+[node name="Hud" type="Node2D" parent="."]
+position = Vector2(216, 16)
+script = ExtResource("3_hud")
+
+[node name="Banner" type="Node2D" parent="."]
+script = ExtResource("4_banner")
+
+[node name="Audio" type="Node" parent="."]
+script = ExtResource("5_audio")
+
+[node name="Pause" type="Node2D" parent="."]
+script = ExtResource("6_pause")

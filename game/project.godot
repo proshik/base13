@@ -1,0 +1,44 @@
+config_version=5
+
+[application]
+config/name="BASE 13"
+config/features=PackedStringArray("4.7", "GL Compatibility")
+run/main_scene="res://app.tscn"
+config/icon="res://assets/icon.png"
+boot_splash/bg_color=Color(0.063, 0.063, 0.063, 1)
+boot_splash/image="res://assets/boot.png"
+boot_splash/fullsize=false
+boot_splash/use_filter=false
+
+[display]
+window/size/viewport_width=256
+window/size/viewport_height=240
+window/size/window_width_override=768
+window/size/window_height_override=720
+window/stretch/mode="viewport"
+window/stretch/aspect="keep"
+window/stretch/scale_mode="integer"
+window/dpi/allow_hidpi=true
+
+[rendering]
+renderer/rendering_method="gl_compatibility"
+textures/canvas_textures/default_texture_filter=0
+; The arm64 export requires this flag. It does not affect our atlases:
+; they are imported without VRAM compression.
+textures/vram_compression/import_etc2_astc=true
+
+[importer_defaults]
+
+; Godot compresses WAV into QOA by default, and that is lossy. For sound that
+; imitates the NES chip it is directly harmful: the timbre rests on the wave
+; shape. The files are tiny, and there is no reason to compress them.
+;
+; loop_mode 0 here means "detect from the file", not "no loop". The value for
+; "forward" is 2, set individually on the two hum sounds.
+wav={
+"compress/mode": 0,
+"edit/loop_mode": 0,
+"force/8_bit": false,
+"force/max_rate": false,
+"force/mono": false
+}
