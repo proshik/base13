@@ -56,8 +56,9 @@ What is left of the deployment plan is the release itself and a machine to put i
 **After it: installation through Homebrew** —
 `docs/plans/2026-09-04-homebrew-cask.md`. Gated on two things only the repository owner
 can do: making the repository public, and creating a `TAP_TOKEN` secret with write access
-to `proshik/homebrew-tap`. Task 1 of that plan runs before the gate; everything after it
-does not.
+to `proshik/homebrew-tap`. Task 1 of that plan runs before the gate, once a desktop
+release exists — `v0.1.0` and `v0.1.1` were deleted with the old history; everything after
+it does not.
 
 ## Repository layout
 

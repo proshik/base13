@@ -55,26 +55,30 @@ Task 3 is written so that a missing `TAP_TOKEN` skips the step with a message in
 
 ---
 
-### Task 1: The cask, checked against the release that already exists
+### Task 1: The cask, checked against a published desktop release
 
 **Files:**
 - Create: `Casks/base13.rb`
 
 **Interfaces:**
-- Consumes: the release asset `base13-0.1.1-macos.zip`
+- Consumes: the release asset `base13-<version>-macos.zip` of a published desktop release
 - Produces: `brew install --cask ./Casks/base13.rb` installs a launchable `BASE 13.app`.
 
 This task needs no token and no public repository: a cask can be installed from a local path, and the asset URL of an existing release is what gets checked. Everything that can be found out before the gate is found out here.
 
+There is no release to check it against today. `v0.1.0` and `v0.1.1` were deleted on 2026-09-13 together with the history they were cut from, before the repository went public. Cut a desktop release first — Actions → `release`, target `desktop` — and `<version>` below is its number.
+
 - [ ] **Step 1: Take the checksum of the published asset**
 
 ```bash
-curl -sL -o /tmp/base13-macos.zip \
-  https://github.com/proshik/base13/releases/download/v0.1.1/base13-0.1.1-macos.zip
+gh release download v<version> --repo proshik/base13 \
+  --pattern 'base13-*-macos.zip' --output /tmp/base13-macos.zip --clobber
 shasum -a 256 /tmp/base13-macos.zip
 ```
 
-Expected: `a901f76aebebd527d9012c0da5912f21c287801c04b279f197057ed5568d97a6` — the digest GitHub reports for that asset. A mismatch means the download broke; repeat it rather than writing down what came out.
+Through `gh` rather than `curl`: while the repository is private, an anonymous download of the asset is a 404.
+
+Expected: the same digest GitHub shows for that asset on the release page. A mismatch means the download broke; repeat it rather than writing down what came out.
 
 - [ ] **Step 2: Write `Casks/base13.rb`**
 
@@ -85,8 +89,8 @@ Expected: `a901f76aebebd527d9012c0da5912f21c287801c04b279f197057ed5568d97a6` —
 # separate tap repo `proshik/homebrew-tap` as `Casks/base13.rb`, rewriting the
 # `version` and `sha256` lines on the way.
 cask "base13" do
-  version "0.1.1"
-  sha256 "a901f76aebebd527d9012c0da5912f21c287801c04b279f197057ed5568d97a6"
+  version "<version>"
+  sha256 "<the digest from step 1>"
 
   url "https://github.com/proshik/base13/releases/download/v#{version}/base13-#{version}-macos.zip"
   name "BASE 13"
@@ -190,7 +194,7 @@ The first publication is by hand deliberately. Task 3 automates a path that has 
 ```bash
 git clone git@github.com:proshik/homebrew-tap.git /tmp/tap
 cp Casks/base13.rb /tmp/tap/Casks/base13.rb
-cd /tmp/tap && git add Casks/base13.rb && git commit -m "base13 0.1.1" && git push
+cd /tmp/tap && git add Casks/base13.rb && git commit -m "base13 <version>" && git push
 ```
 
 - [ ] **Step 2: Install the way a stranger would**
@@ -212,7 +216,7 @@ Expected: the tap is picked up, the download comes from the release, the game op
 brew info --cask base13
 ```
 
-Expected: version `0.1.1`, and the `From:` line pointing at the tap.
+Expected: the version of that release, and the `From:` line pointing at the tap.
 
 - [ ] **Step 4: Nothing to commit here**
 
