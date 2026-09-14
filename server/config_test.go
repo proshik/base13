@@ -87,3 +87,75 @@ func TestRoomLimitComesFromTheEnvironment(t *testing.T) {
 		t.Fatalf("garbage in MAX_ROOMS gave a limit of %d", got.MaxRooms)
 	}
 }
+
+func TestMetricsAddressComesFromEnvironmentAndFlag(t *testing.T) {
+	// Off by default: a machine that never sets METRICS_ADDR never opens the
+	// port.
+	if got := settings(nil, env(nil)); got.MetricsAddr != "" {
+		t.Fatalf("metrics address %q instead of disabled", got.MetricsAddr)
+	}
+
+	if got := settings(nil, env(map[string]string{"METRICS_ADDR": "27115"})); got.MetricsAddr != ":27115" {
+		t.Fatalf("metrics address %q instead of :27115", got.MetricsAddr)
+	}
+
+	given := map[string]string{"metrics-addr": "127.0.0.1:9100"}
+	got := settings(given, env(map[string]string{"METRICS_ADDR": "27115"}))
+	if got.MetricsAddr != "127.0.0.1:9100" {
+		t.Fatalf("metrics address %q: a flag must beat a variable", got.MetricsAddr)
+	}
+
+	// No flag for the token at all: flags are visible to anyone on the
+	// machine who runs ps, and a token there would defeat the point of one.
+	got = settings(nil, env(map[string]string{"METRICS_TOKEN": "0123456789abcdef"}))
+	if got.MetricsToken != "0123456789abcdef" {
+		t.Fatalf("metrics token %q instead of the environment value", got.MetricsToken)
+	}
+}
+
+func TestMetricsOnThePublicPortIsRefused(t *testing.T) {
+	// Ports collide after normalizing, whatever the host looks like: on the
+	// same machine a bare host and a loopback host still reach the same port.
+	for _, metrics := range []string{":27014", "127.0.0.1:27014", "27014"} {
+		c := config{Addr: ":27014", MetricsAddr: metrics}
+		if err := metricsProblem(c); err == nil {
+			t.Fatalf("metrics address %q on the public port was accepted", metrics)
+		}
+	}
+
+	if err := metricsProblem(config{Addr: ":27014", MetricsAddr: ":27115"}); err != nil {
+		t.Fatalf("a distinct metrics port was refused: %v", err)
+	}
+
+	// Disabled is never a collision: metricsProblem is skipped for it.
+	if err := metricsProblem(config{Addr: ":27014"}); err != nil {
+		t.Fatalf("a disabled metrics listener was refused: %v", err)
+	}
+
+	// Too many colons: neither address splits into a host and a port.
+	if err := metricsProblem(config{Addr: ":27014", MetricsAddr: "1:2:3"}); err == nil {
+		t.Fatal("a metrics address that does not split into host and port was accepted")
+	}
+}
+
+func TestShortMetricsTokenIsRefused(t *testing.T) {
+	base := config{Addr: ":27014", MetricsAddr: ":27115"}
+
+	short := base
+	short.MetricsToken = "short"
+	if err := metricsProblem(short); err == nil {
+		t.Fatal("a token shorter than 16 bytes was accepted")
+	}
+
+	sixteen := base
+	sixteen.MetricsToken = "0123456789abcdef"
+	if err := metricsProblem(sixteen); err != nil {
+		t.Fatalf("a 16-byte token was refused: %v", err)
+	}
+
+	none := base
+	none.MetricsToken = ""
+	if err := metricsProblem(none); err != nil {
+		t.Fatalf("no token at all was refused: %v", err)
+	}
+}

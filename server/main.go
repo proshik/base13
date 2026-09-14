@@ -9,7 +9,10 @@ package main
 // request.
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/json"
 	"flag"
 	"log"
@@ -72,6 +75,10 @@ type server struct {
 	// Zero means the defaults; tests shorten them.
 	readIdle  time.Duration
 	pingEvery time.Duration
+	// Guards a render, not the numbers it reads — those have their own locks.
+	// A burst of scrapers waits in line instead of each paying to build the
+	// text from scratch at once; the zero value is already usable.
+	metricsMu sync.Mutex
 }
 
 // remember reports whether there was room for one more connection.
@@ -152,6 +159,7 @@ func main() {
 	flag.String("tls-cert", "", "certificate; overrides TLS_CERT")
 	flag.String("tls-key", "", "certificate key; overrides TLS_KEY")
 	flag.String("max-rooms", "", "how many rooms at most; overrides MAX_ROOMS")
+	flag.String("metrics-addr", "", "address for the metrics listener; overrides METRICS_ADDR; empty disables it")
 	flag.Parse()
 
 	// Only the explicitly set ones: otherwise flag defaults would always beat
@@ -159,6 +167,15 @@ func main() {
 	given := map[string]string{}
 	flag.Visit(func(f *flag.Flag) { given[f.Name] = f.Value.String() })
 	cfg := settings(given, os.Getenv)
+
+	// Checked before anything is opened: a setting that would put metrics on
+	// the public port, or that carries too short a token, must stop the
+	// process, not quietly come up unsafe.
+	if cfg.MetricsAddr != "" {
+		if err := metricsProblem(cfg); err != nil {
+			log.Fatal(err)
+		}
+	}
 
 	s := &server{hub: NewHub(), maxConns: 2*cfg.MaxRooms + 64}
 	s.hub.limit = cfg.MaxRooms
@@ -199,10 +216,32 @@ func main() {
 		}
 	}
 
+	var metricsServer *http.Server
+	if cfg.MetricsAddr != "" {
+		metricsListener, err := net.Listen("tcp", cfg.MetricsAddr)
+		if err != nil {
+			log.Fatal(err)
+		}
+		metricsServer = newMetricsServer(s.metricsHandler(cfg.MetricsToken))
+		go func() {
+			if err := metricsServer.Serve(metricsListener); err != nil && err != http.ErrServerClosed {
+				log.Fatal(err)
+			}
+		}()
+		log.Printf("metrics on %s", metricsListener.Addr())
+		if !loopbackAddr(cfg.MetricsAddr) && cfg.MetricsToken == "" {
+			log.Print("metrics listen beyond this machine with no token set — " +
+				"anyone who can reach that address reads the server's state")
+		}
+	}
+
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	log.Printf("stopping on signal: %s", <-stop)
 	s.shutdown(httpServer, listener)
+	if metricsServer != nil {
+		metricsServer.Close()
+	}
 }
 
 // Empty rooms live on for a while after the last member leaves, so that
@@ -494,6 +533,88 @@ func newHTTPServer(handler http.Handler) *http.Server {
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
+}
+
+// newMetricsServer is the metrics listener's own http.Server: its own
+// timeouts, its own handler, never http.DefaultServeMux. It answers one
+// scraper at a time, not a stream of hijacked sockets, so every timeout is
+// shorter than the public server's.
+func newMetricsServer(handler http.Handler) *http.Server {
+	return &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    8 << 10,
+	}
+}
+
+// metricsHandler answers exactly GET /metrics, with an optional bearer token.
+// Nothing else lives on this listener — no pprof, no health check — so every
+// other path and method is refused rather than routed.
+func (s *server) metricsHandler(token string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/metrics" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if token != "" && !validMetricsToken(r.Header.Get("Authorization"), token) {
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		// One render at a time: a burst of scrapers pays for one buffer
+		// instead of each building the whole text at once. defer unlocks even
+		// if writeMetrics panics, which net/http would otherwise recover from
+		// while leaving the lock held forever.
+		s.metricsMu.Lock()
+		defer s.metricsMu.Unlock()
+		var buf bytes.Buffer
+		s.writeMetrics(&buf)
+		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+		w.Header().Set("Content-Length", strconv.Itoa(buf.Len()))
+		w.Write(buf.Bytes())
+	})
+}
+
+// validMetricsToken reports whether the request carries the configured
+// bearer token. Compared as sha256 sums through subtle.ConstantTimeCompare
+// rather than the raw strings, so neither a timing difference nor the
+// comparison's own short-circuit on length leaks how much of the token a
+// guess got right.
+func validMetricsToken(header, token string) bool {
+	const prefix = "Bearer "
+	if !strings.HasPrefix(header, prefix) {
+		return false
+	}
+	got := sha256.Sum256([]byte(strings.TrimPrefix(header, prefix)))
+	want := sha256.Sum256([]byte(token))
+	return subtle.ConstantTimeCompare(got[:], want[:]) == 1
+}
+
+// loopbackAddr reports whether an address's host reaches only this machine.
+// Empty, "0.0.0.0" and "::" bind every interface and are not loopback;
+// "localhost" and the 127.0.0.0/8 and ::1 addresses are.
+func loopbackAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // event is a housekeeping message saying the room's occupancy changed.
