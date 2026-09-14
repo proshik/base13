@@ -116,7 +116,11 @@ func TestMetricsAddressComesFromEnvironmentAndFlag(t *testing.T) {
 func TestMetricsOnThePublicPortIsRefused(t *testing.T) {
 	// Ports collide after normalizing, whatever the host looks like: on the
 	// same machine a bare host and a loopback host still reach the same port.
-	for _, metrics := range []string{":27014", "127.0.0.1:27014", "27014"} {
+	// A leading zero, a leading plus and brackets around an IPv6 host are all
+	// spellings net.Listen itself treats as the same port, so the check must
+	// too — a text comparison of the port strings would miss every one of
+	// them.
+	for _, metrics := range []string{":27014", "127.0.0.1:27014", "27014", "027014", "+27014", "[::1]:27014"} {
 		c := config{Addr: ":27014", MetricsAddr: metrics}
 		if err := metricsProblem(c); err == nil {
 			t.Fatalf("metrics address %q on the public port was accepted", metrics)

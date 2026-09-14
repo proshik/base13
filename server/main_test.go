@@ -6,11 +6,13 @@ package main
 
 import (
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestMetricsHandlerAnswersOnlyGetMetrics(t *testing.T) {
@@ -118,5 +120,89 @@ func assertPublicPortHasNoMetrics(t *testing.T, addr string) {
 	}
 	if strings.Contains(string(body), "relay_build_info") {
 		t.Fatal("the public port's 404 body carries the exposition")
+	}
+}
+
+// blockingWriter behaves like httptest.NewRecorder, except its first Write
+// signals writing and then waits for release — standing in for a real
+// client that has stopped reading its response.
+type blockingWriter struct {
+	*httptest.ResponseRecorder
+	writing chan struct{}
+	release chan struct{}
+}
+
+func (w *blockingWriter) Write(p []byte) (int, error) {
+	close(w.writing)
+	<-w.release
+	return w.ResponseRecorder.Write(p)
+}
+
+// TestMetricsRenderLockIsReleasedBeforeTheNetworkWrite pins down the exact
+// bug the review found: a slow reader must not hold metricsMu, or every other
+// scrape queues behind it for up to WriteTimeout. A real TCP client that
+// stops reading would prove the same thing, but only once its side of the
+// connection fills the kernel's send buffer — a size and timing that vary by
+// machine and are not something a test should depend on. Blocking inside
+// Write itself reproduces the same shape deterministically: the first
+// request is genuinely stuck in its network write when the second one is
+// sent, so the second can only finish if the lock was already released.
+func TestMetricsRenderLockIsReleasedBeforeTheNetworkWrite(t *testing.T) {
+	s := &server{hub: NewHub()}
+	handler := s.metricsHandler("")
+
+	writing := make(chan struct{})
+	release := make(chan struct{})
+	stuck := &blockingWriter{ResponseRecorder: httptest.NewRecorder(), writing: writing, release: release}
+
+	firstDone := make(chan struct{})
+	go func() {
+		handler.ServeHTTP(stuck, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+		close(firstDone)
+	}()
+
+	select {
+	case <-writing:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the first scrape never reached its network write")
+	}
+
+	second := make(chan struct{})
+	go func() {
+		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/metrics", nil))
+		close(second)
+	}()
+
+	select {
+	case <-second:
+	case <-time.After(2 * time.Second):
+		t.Fatal("a second scrape waited for the first one's stuck network write")
+	}
+
+	close(release)
+	select {
+	case <-firstDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the first scrape did not finish after its write was released")
+	}
+}
+
+func TestBoundPortsCollide(t *testing.T) {
+	// Same port, different hosts: still the same socket on this machine.
+	loopback := &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 27014}
+	everyInterface := &net.TCPAddr{IP: net.ParseIP("0.0.0.0"), Port: 27014}
+	if !boundPortsCollide(loopback, everyInterface) {
+		t.Fatal("the same port on different hosts was not flagged as a collision")
+	}
+
+	distinct := &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 27115}
+	if boundPortsCollide(loopback, distinct) {
+		t.Fatal("two distinct ports were flagged as a collision")
+	}
+
+	// A non-TCP address never collides: there is nothing to compare a port
+	// against.
+	if boundPortsCollide(loopback, &net.UnixAddr{Name: "/tmp/x"}) {
+		t.Fatal("a non-TCP address was flagged as a collision")
 	}
 }

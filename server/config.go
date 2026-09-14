@@ -98,11 +98,11 @@ func metricsProblem(c config) error {
 	if c.MetricsAddr == "" {
 		return nil
 	}
-	_, metricsPort, err := net.SplitHostPort(normalizeAddr(c.MetricsAddr))
+	metricsPort, err := resolvedPort(normalizeAddr(c.MetricsAddr))
 	if err != nil {
 		return fmt.Errorf("metrics address %q: %w", c.MetricsAddr, err)
 	}
-	_, publicPort, err := net.SplitHostPort(normalizeAddr(c.Addr))
+	publicPort, err := resolvedPort(normalizeAddr(c.Addr))
 	if err != nil {
 		return fmt.Errorf("public address %q: %w", c.Addr, err)
 	}
@@ -110,12 +110,27 @@ func metricsProblem(c config) error {
 	// same socket on the machine that runs them, and a proxy dialing loopback
 	// would land on metrics instead of the game.
 	if metricsPort == publicPort {
-		return fmt.Errorf("metrics port %s is the public port; metrics must listen elsewhere", metricsPort)
+		return fmt.Errorf("metrics port %d is the public port; metrics must listen elsewhere", metricsPort)
 	}
 	if c.MetricsToken != "" && len(c.MetricsToken) < 16 {
 		return fmt.Errorf("metrics token is %d bytes, shorter than the 16 required", len(c.MetricsToken))
 	}
 	return nil
+}
+
+// resolvedPort reads the port an address would actually bind to. Comparing
+// the two port strings as text was not enough: net.Listen itself accepts
+// "027014" (a leading zero), "+27014" and service names such as "http", and
+// none of those spellings matches the plain "27014" a human would type for
+// the same socket. net.LookupPort resolves an address the same way dialing
+// and listening do, so the comparison here can never be fooled by a spelling
+// that the standard library itself treats as identical.
+func resolvedPort(addr string) (int, error) {
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return 0, err
+	}
+	return net.LookupPort("tcp", port)
 }
 
 // normalizeAddr accepts "27014", ":27014" and "127.0.0.1:27014" alike:

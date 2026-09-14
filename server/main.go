@@ -222,6 +222,15 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
+		// metricsProblem already refused the configured addresses; this checks
+		// what the two sockets actually bound to, so nothing they resolve to
+		// — however either address was spelled — can put metrics on the
+		// public port.
+		if boundPortsCollide(listener.Addr(), metricsListener.Addr()) {
+			listener.Close()
+			metricsListener.Close()
+			log.Fatalf("metrics bound to the public port %s; refusing to start", metricsListener.Addr())
+		}
 		metricsServer = newMetricsServer(s.metricsHandler(cfg.MetricsToken))
 		go func() {
 			if err := metricsServer.Serve(metricsListener); err != nil && err != http.ErrServerClosed {
@@ -571,13 +580,17 @@ func (s *server) metricsHandler(token string) http.Handler {
 		}
 
 		// One render at a time: a burst of scrapers pays for one buffer
-		// instead of each building the whole text at once. defer unlocks even
-		// if writeMetrics panics, which net/http would otherwise recover from
-		// while leaving the lock held forever.
-		s.metricsMu.Lock()
-		defer s.metricsMu.Unlock()
+		// instead of each building the whole text at once. The lock covers
+		// only the render, in its own function so a deferred unlock still
+		// fires if writeMetrics panics: held across the write below, a slow
+		// reader on the other end would keep every other scrape waiting for
+		// as long as WriteTimeout.
 		var buf bytes.Buffer
-		s.writeMetrics(&buf)
+		func() {
+			s.metricsMu.Lock()
+			defer s.metricsMu.Unlock()
+			s.writeMetrics(&buf)
+		}()
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 		w.Header().Set("Content-Length", strconv.Itoa(buf.Len()))
 		w.Write(buf.Bytes())
@@ -615,6 +628,22 @@ func loopbackAddr(addr string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// boundPortsCollide reports whether two listening addresses ended up on the
+// same port, whatever host each carries. Checked against what the sockets
+// actually bound to rather than the configured strings, so it cannot be
+// fooled by a spelling neither metricsProblem nor a human anticipated.
+func boundPortsCollide(a, b net.Addr) bool {
+	ta, ok := a.(*net.TCPAddr)
+	if !ok {
+		return false
+	}
+	tb, ok := b.(*net.TCPAddr)
+	if !ok {
+		return false
+	}
+	return ta.Port == tb.Port
 }
 
 // event is a housekeeping message saying the room's occupancy changed.
