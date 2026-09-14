@@ -51,14 +51,15 @@ Now every message, journal, room and connection has a ceiling, every read and wr
 deadline, the server pings on its own, and the engine travels gzipped: 9.6 MB instead of
 37.7 on the first visit.
 
-What is left of the deployment plan is the release itself and a machine to put it on.
+The release is out: image `0.4.0` was published on 2026-09-14. What is left of the
+deployment plan is making that package public and a machine to put it on.
 
 **After it: installation through Homebrew** —
 `docs/plans/2026-09-04-homebrew-cask.md`. Gated on two things only the repository owner
-can do: making the repository public, and creating a `TAP_TOKEN` secret with write access
-to `proshik/homebrew-tap`. Task 1 of that plan runs before the gate, once a desktop
-release exists — `v0.1.0` and `v0.1.1` were deleted with the old history; everything after
-it does not.
+can do: making the repository public — done on 2026-09-13 — and creating a `TAP_TOKEN`
+secret with write access to `proshik/homebrew-tap`. Task 1 of that plan runs before the
+gate, once a desktop release exists — `v0.1.0` and `v0.1.1` were deleted with the old
+history; everything after it does not.
 
 ## Repository layout
 
@@ -318,6 +319,14 @@ Rakes we have already stepped on:
   dictionary: those are by reference, and the change is visible from outside.
 - **Checking "the sound is not silence" byte by byte lies.** For a flat square wave the
   low byte is zero in every sample — you have to decode pairs.
+- **Recreating the repository orphans its container package.** A package is tied to the
+  repository's id, not its name: after `proshik/base13` was deleted and created again,
+  `ghcr.io/proshik/base13` was left with no repository, and the release died on the push
+  with `denied: permission_denied: read_package` — wording about reading, from a job that
+  was writing. The package page has no "Connect repository" in that state. The way back is
+  Package settings → Manage Actions access → add the repository, and then raise its role
+  to Write: it is added as Read, which the settings describe as download only. Visibility
+  is the package's own as well — it stayed private when the repository went public.
 
 ## Conventions
 

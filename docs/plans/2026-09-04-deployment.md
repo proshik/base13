@@ -201,17 +201,26 @@ The heartbeat from Task 1 is client code, but the client that browser players ru
 
 **Gated on `docs/plans/2026-09-12-hardening.md`.** Images `0.2.0` and `0.3.0` were cut on 2026-09-04, before the review that found the server with no limits or deadlines and the heartbeat doing nothing in a browser. Neither goes on a public machine; the first that does is `0.4.0`, cut after that plan.
 
-- [ ] **Step 1: Ask before cutting it**
+- [x] **Step 1: Ask before cutting it**
 
 A release is something people are handed. Show what is going out and wait for an answer.
 
-- [ ] **Step 2: Run the release**
+- [x] **Step 2: Run the release**
 
 Actions → `release` → Run workflow, version `0.4.0`, target `server`.
 
 The workflow builds the web export, publishes the image and checks it by running it and asking `/health` and `/`. A desktop release is not needed for this: the fix reaches desktop players with the next one.
 
-- [ ] **Step 3: Check what was published**
+**Done 2026-09-14, on the second attempt.** The first run built everything and died on
+the push with `denied: permission_denied: read_package`. The repository had been deleted
+and created again the day before, and a package is tied to a repository's id, not its
+name: `ghcr.io/proshik/base13` was left with no repository at all, and the new
+repository's token had no rights to it. The package page offers no "Connect repository"
+in this state. What worked: Package settings → Manage Actions access → add `base13`,
+then raise its role from Read, which is what it is added with, to Write. The rerun of
+the same run passed, and the push linked the package to the repository again.
+
+- [x] **Step 3: Check what was published**
 
 ```bash
 docker pull ghcr.io/proshik/base13:0.4.0
@@ -223,6 +232,11 @@ docker stop check
 
 Expected: `/health` answers and the page is served.
 
+Checked 2026-09-14: `0.4.0`, `latest` and `sha-afb7383…` are one image, it answers
+`{"ok":true,"rooms":0}` and serves the page. The pull needed a login — see Step 0 of
+Task 4 for why — and on Apple Silicon `--platform linux/amd64`, since the workflow
+builds for amd64 only.
+
 ---
 
 ### Task 4: Run it on the machine
@@ -231,24 +245,28 @@ Expected: `/health` answers and the page is served.
 
 - [ ] **Step 0: Make the image reachable from the machine**
 
-A package inherits the repository's visibility, so while `proshik/base13` is private the
-image is too: an anonymous `docker pull ghcr.io/proshik/base13:0.4.0` is refused with
-`unauthorized`. Checked by hand, not assumed — and it will look on the server like a
-typo in the tag rather than a permission.
+The package is private, and an anonymous `docker pull ghcr.io/proshik/base13:0.4.0` is
+refused with `unauthorized`. Checked by hand, not assumed — and it will look on the
+server like a typo in the tag rather than a permission.
 
-Two ways out, and the first is on the road anyway:
+A package's visibility is its own setting, not the repository's. It was created private
+while the repository was private, and it stayed private when the repository went public
+on 2026-09-13 — this step once assumed it would follow, and it does not.
 
-- make the repository public — the package follows, and the machine pulls with no
-  credentials at all;
+Two ways out:
+
+- make the package public: Package settings → Danger zone → Change visibility. **There
+  is no way back** — a public package cannot be made private again. Delete the versions
+  that must not be handed to anyone first: `0.1.0`, `0.2.0`, `0.3.0` and `feat-platform`
+  predate the hardening plan. The machine then pulls with no credentials at all;
 - or log in on the machine once, with a token that has `read:packages`:
 
 ```bash
 echo "$GHCR_TOKEN" | docker login ghcr.io -u proshik --password-stdin
 ```
 
-The second one keeps a credential on the machine for a game that is going to be public
-anyway. Prefer the first, and reach for the second only to try the image before the
-repository is opened.
+The second one keeps a credential on the machine for a game that is public anyway. Prefer
+the first, and reach for the second only to try the image before the package is opened.
 
 A third way avoids the registry entirely — build for the machine's architecture and carry
 the file:
