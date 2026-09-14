@@ -100,6 +100,9 @@ func (s *server) writeMetrics(w io.Writer) {
 	e.gauge("relay_connections", "Connections open right now, in a room or still saying hello.", float64(connections))
 	e.gauge("relay_connections_limit", "The most connections held at once; zero means no cap.", float64(s.maxConns))
 	e.gauge("relay_rooms_limit", "The most rooms held at once.", float64(roomsLimit))
+
+	writeRuntimeMetrics(e)
+	writeProcessFamilies(e, procRoot)
 }
 
 // How much a single vector or histogram can hold. The storage is a fixed array
@@ -387,4 +390,21 @@ func (e *exposition) histogramSeries(name string, labels []label, b buckets, h *
 	}
 	e.line(name+"_sum", sorted, float64(h.sum.Load())/float64(b.per))
 	e.line(name+"_count", sorted, float64(cumulative))
+}
+
+// histogramFromCumulative writes a histogram whose bucket counts were made
+// cumulative elsewhere — process.go rebuckets runtime/metrics onto our own
+// bounds, which are not backed by a *histogram's lock-free counters — through
+// the same per-line format every other histogram uses, so a scrape cannot
+// tell the two apart. There is deliberately one rendering path for the text
+// format: this is the smallest possible second entry point into it, not a
+// second format.
+func (e *exposition) histogramFromCumulative(name, help string, bounds []float64, counts []uint64, total uint64, sum float64) {
+	e.family(name, "histogram", help)
+	for i, bound := range bounds {
+		e.line(name+"_bucket", []label{{"le", formatValue(bound)}}, float64(counts[i]))
+	}
+	e.line(name+"_bucket", []label{{"le", "+Inf"}}, float64(total))
+	e.line(name+"_sum", nil, sum)
+	e.line(name+"_count", nil, float64(total))
 }

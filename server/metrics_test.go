@@ -55,6 +55,22 @@ func seriesValue(text, series string) (string, bool) {
 	return "", false
 }
 
+// familyNames returns every family's name, in the order it appears. A TYPE
+// line opens a family exactly once, so this also serves as a structural
+// fingerprint of a render: two renders with the same families in the same
+// order agree on shape even when live figures inside them do not agree on
+// value.
+func familyNames(text string) []string {
+	var names []string
+	for _, line := range strings.Split(text, "\n") {
+		if rest, ok := strings.CutPrefix(line, "# TYPE "); ok {
+			name, _, _ := strings.Cut(rest, " ")
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
 // eventually waits for something the server does on its own goroutines: a
 // connection is counted after the handshake is answered, not before it.
 func eventually(t *testing.T, cond func() bool) {
@@ -406,8 +422,30 @@ func TestExpositionIsWellFormed(t *testing.T) {
 	s := &server{hub: NewHub()}
 	rendered := renderMetrics(s)
 	checkExposition(t, rendered)
-	if again := renderMetrics(s); again != rendered {
-		t.Errorf("two renders of the same state differ:\n%s\n---\n%s", rendered, again)
+	// Since process.go, a render is no longer byte-identical from one scrape
+	// to the next: the scheduler and the garbage collector do not pause for a
+	// scrape, so relay_goroutines, the runtime memory figures and the two
+	// rebucketed histograms are free to move even though nothing the server
+	// itself tracks has changed. What must still hold: the same families in
+	// the same order — nothing appears or disappears between two scrapes of
+	// an idle server — and the server's own numbers, as opposed to the
+	// machine's, stay exactly put.
+	again := renderMetrics(s)
+	checkExposition(t, again)
+	if before, after := familyNames(rendered), familyNames(again); !slices.Equal(before, after) {
+		t.Errorf("families differ between two renders:\n%v\n---\n%v", before, after)
+	}
+	for _, series := range []string{
+		"relay_connections", "relay_connections_limit", "relay_rooms_limit",
+		"relay_start_time_seconds",
+		`relay_build_info{goversion="` + goVersionLabel(runtime.Version()) + `",version="dev"}`,
+	} {
+		first, foundFirst := seriesValue(rendered, series)
+		second, foundSecond := seriesValue(again, series)
+		if !foundFirst || !foundSecond || first != second {
+			t.Errorf("%s moved between two renders of the same state: %q (found %v), then %q (found %v)",
+				series, first, foundFirst, second, foundSecond)
+		}
 	}
 
 	// The server renders no histogram yet, so one is built here: the histogram
