@@ -301,6 +301,9 @@ type Hub struct {
 	waiting map[string]map[string]*Room
 	// The most rooms at once; see defaultMaxRooms.
 	limit int
+	// What the server counts as it goes. Held by value, so a hub built bare
+	// in a test counts from zero with nothing to set up.
+	stats stats
 }
 
 func NewHub() *Hub {
