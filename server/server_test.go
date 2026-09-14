@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -171,8 +172,14 @@ func TestConnectionsPastTheLimitAreRefused(t *testing.T) {
 	s := &server{hub: NewHub(), maxConns: 3}
 	addr, stop := serve(t, s)
 	defer stop()
+	// Keep every client referenced until after the extra connection's answer:
+	// otherwise a GC finalizer on the dropped *net.TCPConn can close a socket
+	// and free a slot before the extra connection knocks, and the test flakes
+	// instead of failing outright.
+	var clients []*client
 	for i := 0; i < 3; i++ {
 		c := dial(t, addr)
+		clients = append(clients, c)
 		c.sendJSON(t, hello{Action: "create", Game: "tanks"})
 		if answer := c.welcome(t); !answer.OK {
 			t.Fatalf("connection %d was refused under the limit: %s", i+1, answer.Error)
@@ -183,6 +190,7 @@ func TestConnectionsPastTheLimitAreRefused(t *testing.T) {
 	if answer := extra.welcome(t); answer.OK || answer.Reason != "busy" {
 		t.Fatalf("a connection past the limit got %+v instead of busy", answer)
 	}
+	runtime.KeepAlive(clients)
 }
 
 func TestCreateAndJoinByCode(t *testing.T) {
