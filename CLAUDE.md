@@ -18,6 +18,7 @@ Application identifier: `com.proshik.base13`.
 - Quick game and image design (stage 3.4): `docs/specs/2026-09-03-quick-game-design.md`
 - Deployment plan (next up): `docs/plans/2026-09-04-deployment.md`
 - Hardening plan (closed, gates the deployment's release): `docs/plans/2026-09-12-hardening.md`
+- Metrics plan (next after the deployment's release): `docs/plans/2026-09-14-metrics.md`
 - Homebrew cask plan (after the deployment): `docs/plans/2026-09-04-homebrew-cask.md`
 - Network lag plan (adaptive delay, carried between levels, gates the next release):
   `docs/plans/2026-09-14-network-lag.md`
