@@ -25,6 +25,10 @@ var _best := 0
 var _link: Link = null
 var _local_index := 0
 var _net_seed := 0
+## The input delay the last level of a network match ended with. A new NetInput
+## comes with every level, and starting each from scratch meant ten seconds of
+## stutter at the start of every level on a slow path. Zero before the first.
+var _net_delay := 0
 var _desync_tick := -1
 
 func _ready() -> void:
@@ -125,7 +129,8 @@ func _show(screen: int, skipped := 0) -> void:
 	_current = load(path).instantiate()
 	add_child(_current)
 	if screen == ScreenFlow.Screen.GAME and _link != null:
-		_current.use_input(NetInput.new(_link, _local_index))
+		_current.use_input(NetInput.new(_link, _local_index, Callable(),
+			NetInput.starting_delay(_link, _net_delay)))
 	if screen == ScreenFlow.Screen.DESYNC:
 		_current.show_tick(_desync_tick)
 	if _current.has_method("configure"):
@@ -159,16 +164,20 @@ func _drop_link() -> void:
 		_link = null
 	_net_seed = 0
 	_local_index = 0
+	_net_delay = 0
 
 func _new_seed() -> int:
 	return int(Time.get_unix_time_from_system() * 1000.0) & 0xFFFFFFFF
 
 func _on_finished(outcome: int) -> void:
+	if _screen == ScreenFlow.Screen.GAME and _link != null:
+		_net_delay = _current.net_delay()
 	if _screen == ScreenFlow.Screen.NET:
 		if outcome == ScreenFlow.Outcome.CONTINUE:
 			_link = _current.link
 			_local_index = _current.local_index
 			_net_seed = _current.seed_value
+			_net_delay = 0
 			_players = 2
 			_campaign = null
 		else:

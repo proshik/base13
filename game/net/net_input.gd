@@ -30,6 +30,11 @@ const WINDOW := 60
 ## Sixteen ticks is 266 ms: beyond that the game turns into correspondence, and
 ## it is more honest to stop at the ceiling.
 const MAX_DELAY := 16
+## Where the first level of a match through the relay starts. Five a side covers a
+## circle of about 130 ms and a path to the relay in Moscow and back is nearer
+## 230, which eight a side covers; on a faster path the delay comes back down to
+## five within three calm seconds.
+const RELAY_START := 8
 ## The most one window may add: a burst of bad luck must not drive the delay to
 ## the ceiling at a stroke.
 const MAX_STEP := 6
@@ -135,12 +140,31 @@ class Tally:
 ## bits_provider is a seam for tests, like the keyboard's: in headless a real
 ## key poll always yields zero, and there is no other way to feed a scripted
 ## sequence of presses.
+##
+## `input_delay` carries the delay a previous level found. It is taken on by
+## growing to it before the first tick, never by starting there. Both sides
+## always fill in exactly `Lockstep.DELAY` ticks of both players' input, and no
+## delay ever goes below that; every later tick comes over the wire on both
+## sides, whatever the two delays are. Starting one side at eleven instead left
+## the other waiting for tick five from a partner who had never meant to send it,
+## while that partner waited for its tick eleven — frozen for good, both of them
+## present.
 func _init(link: Link, local_index: int, bits_provider := Callable(),
 		input_delay := Lockstep.DELAY) -> void:
 	_link = link
-	_lockstep = Lockstep.new(local_index, input_delay)
+	_lockstep = Lockstep.new(local_index)
 	_bits_provider = bits_provider
 	_link.packet_received.connect(handle_packet)
+	# Nobody presses anything before the first tick, the same as in the ticks
+	# both sides fill in.
+	_raise(input_delay, 0, 0)
+
+## The delay a level starts with: where the last one ended, or for the first
+## level, what its link needs.
+static func starting_delay(link: Link, carried := 0) -> int:
+	if carried > 0:
+		return clampi(carried, Lockstep.DELAY, MAX_DELAY)
+	return RELAY_START if link is Relay else Lockstep.DELAY
 
 func pump() -> void:
 	_link.poll()
@@ -153,8 +177,7 @@ func flush() -> void:
 	_link.poll()
 
 func capture(now: int) -> void:
-	var bits: int = _bits_provider.call(now) if _bits_provider.is_valid() \
-		else Keyboard.bits(0) | Gamepad.bits(0)
+	var bits := _read_bits(now)
 	var applied := _lockstep.applied_tick(now)
 	if applied <= _sent_through:
 		return
@@ -172,19 +195,32 @@ func delay() -> int:
 ## input for those ticks will no longer be submitted in the ordinary course,
 ## while the partner waits for it. Leave the band unfilled and the result is not
 ## stutter but a game frozen for good.
+##
+## The band carries the keys held right now. It used to go out as zero wherever
+## no test seam fed the presses — in the game, that is — so a tank driven forward
+## let go for a moment every time the delay grew.
 func raise_to(target: int, now: int) -> void:
+	_raise(target, now, _read_bits(now))
+
+func _raise(target: int, now: int, bits: int) -> void:
 	var was := _lockstep.delay
 	target = mini(target, MAX_DELAY)
 	if target <= was:
 		return
 	_lockstep.delay = target
-	var bits: int = _bits_provider.call(now) if _bits_provider.is_valid() else 0
 	for tick in range(now + was, now + target + 1):
 		if tick <= _sent_through:
 			continue
 		_sent_through = tick
 		_lockstep.submit_local(tick, bits)
 		_link.send(Protocol.pack_input(tick, bits))
+
+## The keys held at tick `now`: the test seam if there is one, the keyboard and
+## the gamepad otherwise.
+func _read_bits(now: int) -> int:
+	if _bits_provider.is_valid():
+		return _bits_provider.call(now)
+	return Keyboard.bits(0) | Gamepad.bits(0)
 
 ## Let the delay come back down. Stuck at the ceiling it makes the controls
 ## mushy forever — which is exactly what a person calls "it lags even more".
@@ -231,9 +267,11 @@ func _end_wait(ms: int) -> void:
 func waiting_for_partner() -> bool:
 	return _stall_run >= STALL_BEFORE_SAYING
 
-## Asked of the link rather than tracked here: subscribing to its signals would
-## hand the link a callable holding this object while this object holds the
-## link, and a reference cycle between two RefCounted is never collected.
+## Asked of the link rather than tracked here: the link already knows, and a copy
+## kept in step through its signals would be one more thing to go stale. A
+## subscription would not keep this object alive, though — a method's callable
+## does not hold its object (`test_net_input.gd` checks it); a lambda capturing
+## `self` would.
 func partner_present() -> bool:
 	return _link.partner_present()
 

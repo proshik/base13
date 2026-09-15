@@ -69,6 +69,40 @@ func test_growth_keeps_the_game_playable_afterwards() -> void:
 		assert_true(input.can_advance(now),
 			"tick %d is not computed after the delay grew" % now)
 
+## Keys held while the delay grows stay held. The band used to go out as zero
+## wherever no test seam fed the presses — in the game, that is — so a tank
+## driven forward stopped for a moment every time the network got worse.
+class Held extends NetInput:
+	func _read_bits(_now: int) -> int:
+		return Types.IN_UP | Types.IN_FIRE
+
+func test_the_band_carries_the_keys_held_right_now() -> void:
+	var held := Held.new(link, 0)
+	held.capture(10)
+	var before := held.delay()
+	link.sent.clear()
+	held.raise_to(before + 3, 10)
+	assert_eq(link.sent.size(), 3)
+	for packet in link.sent:
+		assert_eq(Protocol.unpack(packet)["bits"], Types.IN_UP | Types.IN_FIRE,
+			"the band let go of the keys")
+
+func test_a_carried_delay_starts_the_level_with_no_keys() -> void:
+	# The band sent before the first tick is pressed by nobody, just like the
+	# ticks both sides fill in before it.
+	var held := Held.new(link, 0, Callable(), 9)
+	assert_eq(held.delay(), 9)
+	var ticks := _sent_ticks()
+	for tick in range(Lockstep.DELAY, 10):
+		assert_true(ticks.has(tick), "tick %d of the band is missing" % tick)
+	for packet in link.sent:
+		assert_eq(Protocol.unpack(packet)["bits"], 0)
+	held.capture(0)
+	assert_eq(_sent_ticks().size(), 9 - Lockstep.DELAY + 1,
+		"tick 0 is already covered by the band")
+	held.capture(1)
+	assert_true(_sent_ticks().has(10), "the tick after the band must follow it")
+
 ## Packets must leave for the socket in the same frame they were captured.
 ## `WebSocketPeer.send()` only queues; `poll()` is what writes the queue. While
 ## sending happened after the single poll of a frame, every press lay there an

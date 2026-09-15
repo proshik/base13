@@ -93,3 +93,31 @@ func test_the_partner_coming_back_clears_it() -> void:
 	input.handle_packet(Protocol.pack_input(tick, Types.IN_LEFT))
 	assert_true(input.can_advance(tick))
 	assert_false(input.waiting_for_partner(), "the caption must go when the input does not")
+
+## A new NetInput for every level subscribes to the same link. If the
+## subscription kept the old one alive, every finished level would stay behind
+## listening, and a reference cycle between two RefCounted is never collected.
+## It does not: a method's callable does not hold its object, and the connection
+## goes when the object does.
+func test_a_finished_input_leaves_the_link_alone() -> void:
+	var link := Session.new()
+	var old := NetInput.new(link, 0)
+	var gone: WeakRef = weakref(old)
+	assert_eq(link.packet_received.get_connections().size(), 1)
+	old = null
+	assert_null(gone.get_ref(), "the link kept the old input alive")
+	assert_eq(link.packet_received.get_connections().size(), 0,
+		"the old input is still subscribed")
+
+## The first level through the relay starts where a path to the relay and back
+## needs to be: five a side covers a circle of 130 ms, eight covers 230. A local
+## network starts at the smallest delay. After that a level starts where the
+## last one ended.
+func test_the_first_level_starts_at_the_delay_its_link_needs() -> void:
+	assert_eq(NetInput.starting_delay(Session.new()), Lockstep.DELAY)
+	assert_eq(NetInput.starting_delay(Relay.new()), NetInput.RELAY_START)
+
+func test_a_later_level_starts_where_the_last_one_ended() -> void:
+	assert_eq(NetInput.starting_delay(Relay.new(), 12), 12)
+	assert_eq(NetInput.starting_delay(Session.new(), 7), 7)
+	assert_eq(NetInput.starting_delay(Relay.new(), 99), NetInput.MAX_DELAY)

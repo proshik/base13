@@ -58,6 +58,10 @@ func use_input(source: InputSource) -> void:
 func desync_tick() -> int:
 	return _input.desync_tick if _input is NetInput else -1
 
+## The input delay this level ended with, for the next level to start from.
+func net_delay() -> int:
+	return _input.delay() if _input is NetInput else Lockstep.DELAY
+
 func configure(campaign: Campaign, _players: int, _best: int) -> void:
 	_campaign = campaign
 	_effects = Effects.new()
@@ -142,6 +146,10 @@ func _process(delta: float) -> void:
 		return
 	match _phase:
 		Phase.INTRO:
+			# The link is serviced behind the caption too: a delay carried from
+			# the last level goes out as a band of input before the first tick,
+			# and the partner's band comes in.
+			_input.pump()
 			_timer -= delta
 			if _timer <= 0.0:
 				_banner.hide_banner()
