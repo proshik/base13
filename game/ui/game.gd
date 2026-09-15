@@ -218,10 +218,10 @@ func _show_status(text: String) -> void:
 		_audio.set_engine("")
 		_banner.show_text(text)
 		return
+	# The time spent waiting is not reset here: the pump forgets a long stand by
+	# itself. Resetting when the caption went — sixty frames, a second at 60 Hz
+	# and less than half of one at 144 — left the two sides with different debts.
 	_banner.hide_banner()
-	# Time passed while we waited: without a reset the first frame would hand
-	# over a backlog of catch-up ticks and the game would lurch.
-	_pump.reset()
 
 func _advance(delta: float) -> void:
 	if _sim == null:
@@ -235,6 +235,7 @@ func _advance(delta: float) -> void:
 	# it was lost forever, and the game began falling behind itself.
 	var due := _pump.due(delta)
 	var ran := 0
+	var waited := false
 	for i in due:
 		# The number of the tick being computed: state.tick grows inside tick().
 		var t: int = _sim.get_state().tick
@@ -242,6 +243,7 @@ func _advance(delta: float) -> void:
 		# On the network a tick is computed only once both sides' input has
 		# arrived. Freezing together is right; drifting apart is not.
 		if not _input.can_advance(t):
+			waited = true
 			break
 		ran += 1
 		var before := _player_positions()
@@ -257,7 +259,7 @@ func _advance(delta: float) -> void:
 		_effects.absorb(events)
 		_audio.absorb(events)
 		_effects.advance()
-	_pump.spend(ran)
+	_pump.spend(ran, waited)
 	# What was captured this frame goes out to the network at once instead of
 	# waiting for the next frame's poll.
 	_input.flush()

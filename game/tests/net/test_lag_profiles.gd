@@ -10,19 +10,38 @@ extends GutTest
 ## `(D_A + D_B) × 16.7 ms ≥ circle + two frames`. A path to Moscow and back is
 ## four legs of about sixty milliseconds, and the starting 5 + 5 covers a circle
 ## of about 130.
+##
+## Where each profile settles, both sides starting from the smallest delay:
+##
+##   leg 5 ± 3, a local network    5 / 5, not a single wait
+##   leg 60 ± 20                   10 / 10 within three seconds, then at most one
+##                                 waiting tick a second; 98 % of the clock
+##   leg 120 ± 40                  16 / 16 by the fourth second and still five to
+##                                 seven waiting ticks a second: the circle,
+##                                 480 ± 160 ms, is longer than the ceiling's
+##                                 533 ms can cover; 87 % of the clock
+##   2 s tab switch, leg 5 ± 3     6 on the side that waited, 5 on the one that
+##                                 came back, calm at once
+##   2 s tab switch, leg 60 ± 20   11 / 10, calm at once
+##
+## Before the delay was reconsidered every second, 60 ± 20 waited on 25–30 ticks
+## a second for twelve seconds while the delay crept 5 → 8 → 11; 120 ± 40 waited
+## on 10–20 a second for all thirty; and after a tab switch the side that came
+## back waited on every tick until the level ended, its delay climbing to the
+## ceiling.
 
 const SEED := 13
 const SECONDS := 30
-const FRAME_US := 16667
+const FRAME_US := 1000000 / 60
+## The two machines do not draw in step.
+const OFFSET_US := 5000
 ## How long the delay is given to find its value. Past this, a waiting tick is
 ## stutter a human sees.
 const SETTLE_SECONDS := 3
+## Read as a rate: a late packet a second on average, and never a second with
+## more than two — three is a visible stumble.
 const WAITS_PER_SECOND := 1
-## Until the delay adapts within a second, these profiles stutter: 60 ± 20 waits
-## on 25–30 ticks a second for twelve seconds while the delay creeps 5 → 8 → 11,
-## 120 ± 40 waits all thirty, and after a partner's tab switch the side that
-## came back waits on every tick for good.
-const ADAPTS := false
+const WAITS_IN_ANY_SECOND := 2
 
 class ClockedInput extends NetInput:
 	var clock: LaggyLink.Clock
@@ -44,7 +63,6 @@ class Peer:
 	var skipped := 0.0
 	var _clock: LaggyLink.Clock
 	var _last_waited := -1
-	var _caption := false
 
 	func _init(link: LaggyLink, slot: int, clock: LaggyLink.Clock, frames: Array) -> void:
 		_clock = clock
@@ -58,10 +76,12 @@ class Peer:
 		input.pump()
 		var due := pump.due(delta)
 		var ran := 0
+		var waited := false
 		for i in due:
 			var t: int = sim.get_state().tick
 			input.capture(t)
 			if not input.can_advance(t):
+				waited = true
 				if t != _last_waited:
 					_last_waited = t
 					waits.append(_clock.ms())
@@ -72,13 +92,8 @@ class Peer:
 			input.after_tick(t, h)
 			hashes.append(h)
 			sim.drain_events()
-		pump.spend(ran)
+		pump.spend(ran, waited)
 		input.flush()
-		# `game.gd` `_show_status`: the debt is dropped when the caption goes.
-		var caption := input.waiting_for_partner()
-		if _caption and not caption:
-			pump.reset()
-		_caption = caption
 
 	func waits_in_second(second: int) -> int:
 		var count := 0
@@ -96,22 +111,24 @@ func _play(leg_ms: int, jitter_ms: int, silent_from_ms := -1, silent_ms := 0) ->
 	var frames := Golden.frames()
 	var peers: Array[Peer] = [Peer.new(links[0], 0, clock, frames),
 		Peer.new(links[1], 1, clock, frames)]
+	var next: Array[int] = [FRAME_US, FRAME_US + OFFSET_US]
 	var delta := FRAME_US / 1000000.0
 	var second := 0
 	while clock.us < SECONDS * 1000000:
-		clock.us += FRAME_US
-		for i in 2:
-			var peer := peers[i]
-			var ms := clock.ms()
-			if i == 1 and ms >= silent_from_ms and ms < silent_from_ms + silent_ms:
-				peer.skipped += delta
-				continue
+		var i := 0 if next[0] <= next[1] else 1
+		clock.us = next[i]
+		next[i] += FRAME_US
+		var peer := peers[i]
+		var ms := clock.ms()
+		if i == 1 and ms >= silent_from_ms and ms < silent_from_ms + silent_ms:
+			peer.skipped += delta
+		else:
 			peer.frame(delta + peer.skipped)
 			peer.skipped = 0.0
 		if clock.ms() / 1000 > second:
 			second = clock.ms() / 1000
-			for peer in peers:
-				peer.delays.append(peer.input.delay())
+			for p in peers:
+				p.delays.append(p.input.delay())
 	return peers
 
 func _describe(peers: Array[Peer]) -> String:
@@ -120,7 +137,8 @@ func _describe(peers: Array[Peer]) -> String:
 		var per_second: Array[int] = []
 		for s in SECONDS:
 			per_second.append(peers[i].waits_in_second(s))
-		lines += "\n  side %d: waits per second %s, delay %s" % [i, per_second, peers[i].delays]
+		lines += "\n  side %d: %d ticks, waits per second %s, delay %s" % [
+			i, peers[i].hashes.size(), per_second, peers[i].delays]
 	return lines
 
 func _assert_same_worlds(peers: Array[Peer]) -> void:
@@ -132,38 +150,55 @@ func _assert_same_worlds(peers: Array[Peer]) -> void:
 	assert_false(peers[0].input.desynced or peers[1].input.desynced,
 		"the hash comparison fired")
 
+## No waits is also what a game frozen for good looks like.
+func _assert_keeps_pace(peers: Array[Peer], percent: int, silent_ms := 0) -> void:
+	var expected := (SECONDS * 1000 - silent_ms) * 60 / 1000
+	for i in 2:
+		assert_gte(peers[i].hashes.size() * 100, expected * percent,
+			"side %d fell behind the clock%s" % [i, _describe(peers)])
+
 func _assert_calm_after(peers: Array[Peer], from_second: int) -> void:
 	for i in 2:
+		var total := 0
 		for s in range(from_second, SECONDS):
-			if peers[i].waits_in_second(s) > WAITS_PER_SECOND:
+			var waits := peers[i].waits_in_second(s)
+			total += waits
+			if waits > WAITS_IN_ANY_SECOND:
 				fail_test("side %d waited on %d ticks in second %d — that is stutter%s" % [
-					i, peers[i].waits_in_second(s), s, _describe(peers)])
+					i, waits, s, _describe(peers)])
 				return
+		if total > (SECONDS - from_second) * WAITS_PER_SECOND:
+			fail_test("side %d waited on %d ticks after second %d — that is stutter%s" % [
+				i, total, from_second, _describe(peers)])
+			return
 	pass_test("calm")
 
 func test_a_quarter_second_circle_stops_stuttering_within_seconds() -> void:
-	if not ADAPTS:
-		pending("the input delay does not adapt yet")
-		return
 	var peers := _play(60, 20)
 	_assert_same_worlds(peers)
+	_assert_keeps_pace(peers, 95)
 	_assert_calm_after(peers, SETTLE_SECONDS)
 
-func test_a_half_second_circle_settles_under_the_ceiling() -> void:
-	if not ADAPTS:
-		pending("the input delay does not adapt yet")
-		return
+## Past the ceiling nothing covers the circle, and the waits stay: sixteen ticks a
+## side is where the game would turn into correspondence, and raising it waits
+## for players who need it. What must hold is that the delay goes to the ceiling
+## and no further, and the game carries on in step.
+func test_a_half_second_circle_goes_to_the_ceiling_and_plays_on() -> void:
 	var peers := _play(120, 40)
 	_assert_same_worlds(peers)
-	_assert_calm_after(peers, SETTLE_SECONDS)
+	_assert_keeps_pace(peers, 80)
 	for i in 2:
-		assert_lte(peers[i].delays.max(), NetInput.MAX_DELAY)
+		assert_eq(peers[i].delays.max(), NetInput.MAX_DELAY,
+			"side %d did not take the slack there was%s" % [i, _describe(peers)])
+		assert_eq(peers[i].delays[-1], NetInput.MAX_DELAY,
+			"side %d gave slack back while still waiting%s" % [i, _describe(peers)])
 
 ## Responsiveness must not pay for all of this: on a local network the delay has
 ## nothing to grow for.
 func test_a_local_network_keeps_the_smallest_delay() -> void:
 	var peers := _play(5, 3)
 	_assert_same_worlds(peers)
+	_assert_keeps_pace(peers, 99)
 	for i in 2:
 		for d in peers[i].delays:
 			if d != Lockstep.DELAY:
@@ -176,11 +211,18 @@ func test_a_local_network_keeps_the_smallest_delay() -> void:
 ## cannot keep up. The game must settle again afterwards, not climb to the
 ## ceiling and stay there.
 func test_a_partner_switching_tabs_is_not_a_slow_network() -> void:
-	if not ADAPTS:
-		pending("the input delay does not adapt yet")
-		return
 	var peers := _play(5, 3, 10000, 2000)
 	_assert_same_worlds(peers)
+	_assert_keeps_pace(peers, 95, 2000)
+	for i in 2:
+		assert_lt(peers[i].delays.max(), NetInput.MAX_DELAY,
+			"side %d went to the ceiling over one wait%s" % [i, _describe(peers)])
+	_assert_calm_after(peers, 15)
+
+func test_a_tab_switch_on_a_slow_path_settles_as_quickly() -> void:
+	var peers := _play(60, 20, 10000, 2000)
+	_assert_same_worlds(peers)
+	_assert_keeps_pace(peers, 95, 2000)
 	for i in 2:
 		assert_lt(peers[i].delays.max(), NetInput.MAX_DELAY,
 			"side %d went to the ceiling over one wait%s" % [i, _describe(peers)])
