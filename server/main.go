@@ -787,10 +787,14 @@ func (s *server) metricsHandler(token string) http.Handler {
 	// of the server's while it writes, so a slow reader on the other end holds
 	// up no other scrape. Four at once is more than any honest scraper sends; a
 	// flood past them is turned away rather than each paying for a gather of
-	// its own. A gather that runs past the timeout is answered as unavailable,
-	// and a gather that fails says why in the log.
+	// its own. A gather that runs past the timeout is answered as unavailable.
+	//
+	// A collector that fails leaves its own figures out and nothing else: a
+	// standard collector clashing with a name after a Go upgrade must not
+	// blank every figure of the server's along with it.
 	scrape := promhttp.HandlerFor(s.metricsGatherers(), promhttp.HandlerOpts{
-		ErrorLog:            log.Default(),
+		ErrorLog:            scrapeLog{},
+		ErrorHandling:       promhttp.ContinueOnError,
 		MaxRequestsInFlight: 4,
 		Timeout:             5 * time.Second,
 	})
@@ -812,6 +816,16 @@ func (s *server) metricsHandler(token string) http.Handler {
 
 		scrape.ServeHTTP(w, r)
 	})
+}
+
+// scrapeLog is where a scrape says it could not be served whole. The client
+// library's message names the series that failed, labels and all, and the log
+// is kept by whoever runs the server for as long as they like, so only the fact
+// goes there. The scrape itself goes out with everything that was gathered.
+type scrapeLog struct{}
+
+func (scrapeLog) Println(...any) {
+	log.Print("metrics: a scrape left out figures that could not be gathered or written")
 }
 
 // validMetricsToken reports whether the request carries the configured

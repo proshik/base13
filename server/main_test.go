@@ -6,7 +6,9 @@ package main
 
 import (
 	"compress/gzip"
+	"errors"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/expfmt"
 )
 
@@ -209,6 +212,68 @@ func TestASlowScrapeReaderHoldsUpNoOtherScrape(t *testing.T) {
 	case <-firstDone:
 	case <-time.After(2 * time.Second):
 		t.Fatal("the first scrape did not finish after its write was released")
+	}
+}
+
+// brokenCollector stands in for a collector that fails as it is gathered: a
+// standard one clashing with a name after a Go upgrade, say. Its error names a
+// series the way the client library's own errors do, labels and all.
+type brokenCollector struct{}
+
+var brokenDesc = prometheus.NewDesc("relay_example_broken", "A collector that fails.", []string{"platform"}, nil)
+
+const brokenMarker = "zqbrokenmarker"
+
+func (brokenCollector) Describe(descs chan<- *prometheus.Desc) { descs <- brokenDesc }
+
+func (brokenCollector) Collect(metrics chan<- prometheus.Metric) {
+	metrics <- prometheus.NewInvalidMetric(brokenDesc, errors.New(brokenMarker+` label:{name:"platform" value:"web_ios"}`))
+}
+
+func TestABrokenCollectorDoesNotBlankTheScrape(t *testing.T) {
+	// One collector failing is one family missing, not a dashboard gone blank:
+	// everything else that was gathered still goes out. Why it failed is not
+	// sent to the scraper, and the log hears only that something was left out —
+	// the library's message names series with their labels, and the log is kept
+	// by whoever runs the server for as long as they like.
+	// Not parallel: it takes over the package's log for its duration.
+	captured := &lockedBuffer{}
+	kept := log.Writer()
+	log.SetOutput(captured)
+	defer log.SetOutput(kept)
+
+	s := &server{hub: NewHub(), maxConns: 7}
+	s.hub.stats.registry.MustRegister(brokenCollector{})
+	s.hub.stats.relayed(6)
+	rec := httptest.NewRecorder()
+	s.metricsHandler("").ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("a scrape with one broken collector was answered %d:\n%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	checkExposition(t, body)
+	values := seriesValues(t, body)
+	for series, want := range map[string]float64{
+		"relay_connections_limit":  7,
+		"relay_packet_bytes_total": 6,
+	} {
+		if got, found := values[series]; !found || got != want {
+			t.Errorf("%s is %v (found %v) beside a broken collector, expected %v", series, got, found, want)
+		}
+	}
+	if _, found := values["go_goroutines"]; !found {
+		t.Error("the standard figures are gone beside a broken collector")
+	}
+	if strings.Contains(body, brokenMarker) || strings.Contains(body, "relay_example_broken") {
+		t.Errorf("the scrape carries the broken collector's family or its error:\n%s", body)
+	}
+
+	logged := captured.String()
+	if !strings.Contains(logged, "metrics") {
+		t.Errorf("nothing in the log says a scrape left something out: %q", logged)
+	}
+	if strings.Contains(logged, brokenMarker) || strings.Contains(logged, "web_ios") {
+		t.Errorf("the log carries the library's error, labels and all: %q", logged)
 	}
 }
 

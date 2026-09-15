@@ -165,9 +165,11 @@ func metricValue(t *testing.T, s *server, series string) float64 {
 	return value
 }
 
-// familyNames returns the name of every family in a scrape, in order. Two
-// scrapes with the same families agree on shape even when the live figures
-// inside them do not agree on value.
+// familyNames returns the name of every family in a scrape, sorted by name as
+// parseScrape lays them out. The order a scrape writes them in is the client
+// library's, not the server's, so two of these lists compare the sets of
+// families: two scrapes with the same families agree on shape even when the
+// live figures inside them do not agree on value.
 func familyNames(t *testing.T, text string) []string {
 	t.Helper()
 	samples, err := parseScrape(text)
@@ -205,15 +207,21 @@ func eventually(t *testing.T, cond func() bool) {
 var expositionLabelValue = regexp.MustCompile(`^[a-z0-9_.]+$`)
 
 // expositionProblem says what is wrong with a scrape, if anything: a scrape
-// Prometheus would refuse, or a label value outside the closed sets'
-// characters. le and quantile are exempt: they are bounds the client library
-// writes, and +Inf is one of them.
+// Prometheus would refuse, or a label value of the server's own outside the
+// closed sets' characters. Only relay_ families are held to that: the
+// standard collectors' labels are the client library's, and go_info names the
+// toolchain as it reports itself, spaces and all on an experimental one. le
+// and quantile are exempt too: they are bounds the library writes, and +Inf
+// is one of them.
 func expositionProblem(text string) error {
 	samples, err := parseScrape(text)
 	if err != nil {
 		return err
 	}
 	for _, s := range samples {
+		if !strings.HasPrefix(s.name, "relay_") {
+			continue
+		}
 		for _, l := range s.labels {
 			if l.GetName() == "le" || l.GetName() == "quantile" {
 				continue
@@ -292,6 +300,12 @@ func TestExpositionIsWellFormed(t *testing.T) {
 		if err := expositionProblem(bad.text); err == nil || !strings.Contains(err.Error(), bad.mention) {
 			t.Errorf("the checker let %s through (problem: %v)", bad.why, err)
 		}
+	}
+	// And it leaves the library's own labels to the library: an experimental
+	// toolchain names itself with a space.
+	library := "# HELP go_info Go.\n# TYPE go_info gauge\ngo_info{version=\"go1.27 X:jsonv2\"} 1\n"
+	if err := expositionProblem(library); err != nil {
+		t.Errorf("the checker refused a label of the client library's own: %v", err)
 	}
 }
 
