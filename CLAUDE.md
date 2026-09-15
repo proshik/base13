@@ -21,8 +21,8 @@ Application identifier: `com.proshik.base13`.
 - Homebrew cask plan (after the deployment): `docs/plans/2026-09-04-homebrew-cask.md`
 - Network lag plan (adaptive delay, carried between levels, gates the next release):
   `docs/plans/2026-09-14-network-lag.md`
-- Metrics plan (implemented on `feat/metrics`, not yet merged; ships in the next image, the
-  release the network lag plan gates): `docs/plans/2026-09-14-metrics.md`
+- Metrics plan (implemented; ships in the next image, the release the network lag plan
+  gates): `docs/plans/2026-09-14-metrics.md`
 
 The work is split into four subprojects: **1** the core and the single-player game,
 **2** mobile platforms, **3** network co-op, **4** release to the stores.

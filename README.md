@@ -450,6 +450,10 @@ What else the figures do not say:
 - iPadOS Safari sends a Macintosh user agent, so iPads count as `web`, not `web_ios`.
 - Versions are live players only, the ten most common plus `other`; while real traffic is low,
   a few fake clients can rotate fake versions through the ten.
+- A development build reports version `0.0.0`: `project.godot` carries that placeholder, and
+  only `tools/stamp_version.sh` at release time stamps the real number. So a local `godot`
+  run and the web build `tools/image.sh` makes both show up as `0.0.0` in the version label,
+  not as `other` and not as the repository's own version.
 - Single-player and LAN games never talk to the server, so they are not measured at all.
 
 ### Testing on two laptops

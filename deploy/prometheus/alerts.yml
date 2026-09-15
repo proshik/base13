@@ -169,15 +169,18 @@ groups:
         expr: sum by (instance, kind) (increase(relay_desynced_matches_total{job="relay"}[1h])) > 0
         for: 0m
         labels:
-          severity: page
+          severity: info
         annotations:
           summary: "A match on {{ $labels.instance }} desynced ({{ $labels.kind }} room)"
           description: >-
             Two players' worlds parted: a bug in the game, not in the network. The core is
-            meant to compute the same world everywhere. Check first the players by version
-            and by platform on the dashboard: two versions in one match, or a platform that
-            computes differently (the ?selftest hash), are the usual causes. Self-reported,
-            but counted only once a room and only in a room that paired.
+            meant to compute the same world everywhere. But the count is self-reported by
+            clients and can be forged — two sockets sitting in one code room, both under a
+            forger's control, can raise it at will — so this is a signal to look at logs and
+            client versions, not a page. Check first the players by version and by platform
+            on the dashboard: two versions in one match, or a platform that computes
+            differently (the ?selftest hash), are the usual causes. Counted only once a room
+            and only in a room that paired.
 
       - alert: RelayMalformedReports
         expr: >-

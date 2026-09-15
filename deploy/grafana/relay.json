@@ -469,7 +469,7 @@
       "id": 10,
       "type": "stat",
       "title": "Pairings",
-      "description": "Over the dashboard's time range. The server counts events, not people: one person who reloads the page counts twice. Rooms whose two seats filled for the first time. A partner coming back is not another pairing.",
+      "description": "Over the dashboard's time range. A pairing counts once per room, when both seats are first filled; a partner coming back afterward is not another pairing.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -519,7 +519,7 @@
       "id": 11,
       "type": "timeseries",
       "title": "Wait for a partner, p50 and p90",
-      "description": "How long the player already in a room waited for a partner who came, by kind of room. Over an hour rather than five minutes: pairings are rare next to packets. A code room's wait includes the time it took to pass the code on. Quantiles come from the buckets, never from sum over count: a mean is what a few forged reports drag furthest. ",
+      "description": "How long the player already in a room waited for a partner who came, by kind of room. Over an hour rather than five minutes: pairings are rare next to packets. A code room's wait includes the time it took to pass the code on. Quantiles come from the buckets, never from sum over count: a mean is what a few slow connections drag furthest.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -775,7 +775,7 @@
       "id": 16,
       "type": "timeseries",
       "title": "Round trip to players, p50 and p95",
-      "description": "The server's own ping to each player and the pong back, by platform, about every twenty seconds a player. Godot answers a ping once a frame, so desktop and native figures include up to about 16 ms of the game loop; browsers answer at once. A client can make its own figure worse by answering late, never better. High RTT with a low worst gap is a slow but steady path, which the input delay absorbs. Quantiles come from the buckets, never from sum over count: a mean is what a few forged reports drag furthest. ",
+      "description": "The server's own ping to each player and the pong back, by platform, about every twenty seconds a player. Godot answers a ping once a frame, so desktop and native figures include up to about 16 ms of the game loop; browsers answer at once. A client can make its own figure worse by answering late, never better. High RTT with a low worst gap is a slow but steady path, which the input delay absorbs. Quantiles come from the buckets, never from sum over count: a mean is what a few slow connections drag furthest.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1098,7 +1098,7 @@
       "id": 21,
       "type": "timeseries",
       "title": "Input delay, p50 and p90",
-      "description": "The input delay players' games ran at, in ticks: five on a smooth link, up to sixteen on a ragged one. A window in which the game stood frozen (a partner's hidden tab, a relay drop and return, the player's own hidden tab) is reported like any other: it reads as low speed with no waits, the machine verdict. Before blaming players' machines, check the worst gap, where a stand shows as a gap of seconds. Self-reported by the player's side: a client can forge these figures within the bounds the server clamps them to, and a handful of forgers can bend a distribution. Only network games played through this server report; single-player and LAN games are not measured. Bucket bounds are whole numbers, which Prometheus 3 stores as 5.0: read them through quantiles, never by selecting a bound's text.",
+      "description": "The input delay players' games ran at, in ticks: five on a smooth link, up to sixteen on a ragged one. The delay grows when the network falls short of the round trip the match needs, and is carried between levels rather than reset at the start of each one. Self-reported by the player's side: a client can forge these figures within the bounds the server clamps them to, and a handful of forgers can bend a distribution. Only network games played through this server report; single-player and LAN games are not measured. Bucket bounds are whole numbers, which Prometheus 3 stores as 5.0: read them through quantiles, never by selecting a bound's text.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1283,7 +1283,7 @@
       "id": 24,
       "type": "timeseries",
       "title": "Engine download time, p50 and p95",
-      "description": "How long a player waits for the engine to download, from the server starting on the request to the last byte handed to the connection. Over an hour: downloads are rare. A lower bound: socket and proxy buffers hide the rest, and behind nginx with proxy_buffering on it measures only the hop to the proxy. Quantiles come from the buckets, never from sum over count: a mean is what a few forged reports drag furthest. ",
+      "description": "How long a player waits for the engine to download, from the server starting on the request to the last byte handed to the connection. Over an hour: downloads are rare. A lower bound: socket and proxy buffers hide the rest, and behind nginx with proxy_buffering on it measures only the hop to the proxy. Quantiles come from the buckets, never from sum over count: a mean is what a few slow connections drag furthest.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1561,7 +1561,7 @@
       "id": 29,
       "type": "timeseries",
       "title": "Disconnects by cause",
-      "description": "Seated players' connections that ended, per five minutes. goodbye: they closed it; idle: silent past the read deadline; lost: dropped without a word; cut: ended by the server's side, which includes a peer whose write failed (a broken pipe or a reset), not only evictions; protocol: they broke the protocol.",
+      "description": "Seated players' connections that ended, per five minutes. goodbye: they closed it, or the server did on a restart — a client answers the server's own close frame with one of its own; idle: silent past the read deadline; lost: dropped without a word; cut: ended by the server's side, which includes a peer whose write failed (a broken pipe or a reset), not only evictions; protocol: they broke the protocol.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
