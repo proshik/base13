@@ -126,6 +126,220 @@ func TestPingIsAnsweredWithPong(t *testing.T) {
 	}
 }
 
+// serverFrame reads one frame the server wrote to the far end of a pipe. The
+// server never masks, and every frame these tests read is short.
+func serverFrame(r io.Reader) (byte, []byte, error) {
+	var head [2]byte
+	if _, err := io.ReadFull(r, head[:]); err != nil {
+		return 0, nil, err
+	}
+	payload := make([]byte, head[1]&0x7F)
+	if _, err := io.ReadFull(r, payload); err != nil {
+		return 0, nil, err
+	}
+	return head[0] & 0x0F, payload, nil
+}
+
+// pingFrom makes the server ping and returns what the ping carried, as the far
+// end of the pipe read it.
+func pingFrom(t *testing.T, client net.Conn, server *Conn) []byte {
+	t.Helper()
+	type frame struct {
+		opcode  byte
+		payload []byte
+		err     error
+	}
+	read := make(chan frame, 1)
+	go func() {
+		opcode, payload, err := serverFrame(client)
+		read <- frame{opcode, payload, err}
+	}()
+	if err := server.Ping(); err != nil {
+		t.Fatalf("the ping was not written: %v", err)
+	}
+	got := <-read
+	if got.err != nil || got.opcode != opPing {
+		t.Fatalf("the far end did not read a ping: opcode %d, %v", got.opcode, got.err)
+	}
+	return got.payload
+}
+
+// replyWith writes frames from the client's side and then one data message, and
+// returns once the server has read up to that message: every frame before it
+// has been handled by then.
+func replyWith(t *testing.T, client net.Conn, server *Conn, frames ...[]byte) {
+	t.Helper()
+	go func() {
+		for _, frame := range frames {
+			if _, err := client.Write(frame); err != nil {
+				return
+			}
+		}
+		client.Write(clientFrame(opBinary, []byte{9}))
+	}()
+	got, err := server.ReadMessage()
+	if err != nil {
+		t.Fatalf("the connection did not survive the answer: %v", err)
+	}
+	if !bytes.Equal(got, []byte{9}) {
+		t.Fatalf("a control frame surfaced as data: %v", got)
+	}
+}
+
+// roundTrips collects the round trips a connection reports. It is called on the
+// reading goroutine, the test's own, so a plain slice is enough.
+func roundTrips(server *Conn) *[]time.Duration {
+	var rtts []time.Duration
+	server.onRTT = func(d time.Duration) { rtts = append(rtts, d) }
+	return &rtts
+}
+
+func TestPongWithTheLastPingPayloadGivesRTT(t *testing.T) {
+	// The server pings every connection anyway, and every client answers by
+	// itself, echoing what the ping carried. A ping that carries the moment it
+	// left comes back as a measurement of the network between the two, with
+	// nothing asked of the client.
+	client, server := pipeConn(t)
+	defer client.Close()
+	rtts := roundTrips(server)
+
+	began := time.Now()
+	payload := pingFrom(t, client, server)
+	if len(payload) != 8 || binary.BigEndian.Uint64(payload) == 0 {
+		t.Fatalf("a ping must carry eight bytes of a moment that is not zero, carried %v", payload)
+	}
+	time.Sleep(30 * time.Millisecond) // the way back takes a while
+	replyWith(t, client, server, clientFrame(opPong, payload))
+	took := time.Since(began)
+
+	if len(*rtts) != 1 {
+		t.Fatalf("one answered ping gave %d round trips, expected 1", len(*rtts))
+	}
+	// At least the thirty milliseconds the answer was held back, and at most
+	// the time the test watched pass since before the ping: both hold on a
+	// machine under any load.
+	if rtt := (*rtts)[0]; rtt < 30*time.Millisecond || rtt > took {
+		t.Fatalf("a round trip held back thirty milliseconds was measured as %v, "+
+			"expected at least 30ms and at most the %v since before the ping", rtt, took)
+	}
+}
+
+// answeringConn is a network so fast that the answer to a frame is read before
+// the write that sent the frame has returned.
+type answeringConn struct {
+	net.Conn
+	answer func(frame []byte)
+}
+
+func (c answeringConn) Write(frame []byte) (int, error) {
+	c.answer(frame)
+	return len(frame), nil
+}
+
+func TestAPongBeforeThePingWriteReturnsIsCounted(t *testing.T) {
+	// A pong can be on its way back before the write that sent its ping has
+	// returned. The moment the ping left has to be where the pong looks for it
+	// by then, or the fastest links are the ones never measured.
+	far, near := net.Pipe()
+	defer far.Close()
+	server := &Conn{reader: bufio.NewReader(near)}
+	rtts := roundTrips(server)
+	var survived error
+	server.raw = answeringConn{Conn: near, answer: func(frame []byte) {
+		payload := append([]byte{}, frame[2:]...) // the server does not mask
+		go func() {
+			far.Write(clientFrame(opPong, payload))
+			far.Write(clientFrame(opBinary, []byte{9}))
+		}()
+		_, survived = server.ReadMessage()
+	}}
+	if err := server.Ping(); err != nil {
+		t.Fatalf("the ping was not written: %v", err)
+	}
+	if survived != nil {
+		t.Fatalf("the connection did not survive the answer: %v", survived)
+	}
+	if len(*rtts) != 1 {
+		t.Fatalf("a pong read before its ping's write returned gave %d round trips, expected 1", len(*rtts))
+	}
+}
+
+func TestUnsolicitedPongIsIgnored(t *testing.T) {
+	// The standard lets either side send a pong nobody asked for. It measures
+	// nothing — there is no ping it answers — and it is no reason to drop the
+	// connection either.
+	client, server := pipeConn(t)
+	defer client.Close()
+	rtts := roundTrips(server)
+
+	var zero, plausible [8]byte
+	// A moment the server could well have sent, had it pinged.
+	binary.BigEndian.PutUint64(plausible[:], uint64(stamp()))
+	replyWith(t, client, server,
+		clientFrame(opPong, nil),
+		clientFrame(opPong, []byte("hey")),
+		// Zero is what a connection that never pinged holds: taken as a
+		// match, it would report the whole time since the process started.
+		clientFrame(opPong, zero[:]),
+		clientFrame(opPong, plausible[:]),
+	)
+	if len(*rtts) != 0 {
+		t.Fatalf("pongs to no ping gave round trips: %v", *rtts)
+	}
+}
+
+func TestAPongIsCountedOnce(t *testing.T) {
+	// One ping is one round trip. A client that echoes the same pong again,
+	// by mistake or to weigh the numbers, adds nothing to them.
+	client, server := pipeConn(t)
+	defer client.Close()
+	rtts := roundTrips(server)
+
+	payload := pingFrom(t, client, server)
+	replyWith(t, client, server,
+		clientFrame(opPong, payload),
+		clientFrame(opPong, payload),
+		clientFrame(opPong, payload),
+	)
+	if len(*rtts) != 1 {
+		t.Fatalf("one ping answered three times gave %d round trips, expected 1", len(*rtts))
+	}
+}
+
+func TestAForgedPongPayloadIsIgnored(t *testing.T) {
+	// A client cannot answer a ping before it arrives, so the round trip can
+	// only be made to look longer by claiming the ping left earlier. The claim
+	// has to name the exact nanosecond the server wrote, or it is not taken.
+	client, server := pipeConn(t)
+	defer client.Close()
+	rtts := roundTrips(server)
+
+	payload := pingFrom(t, client, server)
+	if len(payload) != 8 {
+		t.Fatalf("a ping must carry eight bytes, carried %v", payload)
+	}
+	sent := binary.BigEndian.Uint64(payload)
+	earlier := binary.BigEndian.AppendUint64(nil, sent-uint64(time.Second))
+	later := binary.BigEndian.AppendUint64(nil, sent+1)
+	backwards := binary.LittleEndian.AppendUint64(nil, sent)
+	replyWith(t, client, server,
+		clientFrame(opPong, earlier),
+		clientFrame(opPong, later),
+		clientFrame(opPong, backwards),
+		clientFrame(opPong, payload[:7]),
+		clientFrame(opPong, append(append([]byte{}, payload...), 0)),
+	)
+	if len(*rtts) != 0 {
+		t.Fatalf("forged pongs gave round trips: %v", *rtts)
+	}
+
+	// Nor did any of them use the ping up: the true answer still counts.
+	replyWith(t, client, server, clientFrame(opPong, payload))
+	if len(*rtts) != 1 {
+		t.Fatalf("the true answer after the forgeries gave %d round trips, expected 1", len(*rtts))
+	}
+}
+
 func TestCloseFrameEndsTheConversation(t *testing.T) {
 	client, server := pipeConn(t)
 	go func() { client.Write(clientFrame(opClose, nil)) }()

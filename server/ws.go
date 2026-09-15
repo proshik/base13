@@ -92,6 +92,13 @@ type Conn struct {
 	// Zero means no deadline. Accept sets the defaults; tests shorten them.
 	readIdle   time.Duration
 	writeLimit time.Duration
+	// The moment the last ping left, as its stamp, and zero once it has been
+	// answered or while nothing was ever sent. The writer stores it and the
+	// reader takes it back, from two goroutines, so it is atomic.
+	lastPing atomic.Int64
+	// Told each round trip a pong measures. Set by whoever reads the connection
+	// before any ping goes out, and read only by that reader afterwards.
+	onRTT func(time.Duration)
 }
 
 // Accept completes the handshake and hijacks the connection from the HTTP
@@ -157,6 +164,7 @@ func (c *Conn) ReadMessage() ([]byte, error) {
 			}
 			continue
 		case opPong:
+			c.pong(payload)
 			continue
 		case opText, opBinary, opContinuation:
 			if len(assembled)+len(payload) > maxMessageSize {
@@ -247,8 +255,43 @@ func (c *Conn) WriteText(data []byte) error {
 // Ping asks the other side to answer. The server sends it on a timer because a
 // browser cannot send one at all — its WebSocket has no such call — and a
 // waiting browser player would otherwise be silent in both directions.
+//
+// The ping carries the moment it left, eight bytes of a stamp. The standard
+// has every client echo a ping's payload in its pong, browsers and Godot
+// included, without the page or the game doing anything, so the answer
+// measures the network to the player for free. A stamp rather than the wall
+// clock: a clock stepped between the ping and the pong would turn into a round
+// trip that never happened.
 func (c *Conn) Ping() error {
-	return c.writeFrame(opPing, nil)
+	sent := stamp()
+	// Stored before the write: a pong can arrive as soon as the frame is on the
+	// wire, and it must find the moment it answers already there.
+	c.lastPing.Store(int64(sent))
+	var payload [8]byte
+	binary.BigEndian.PutUint64(payload[:], uint64(sent))
+	return c.writeFrame(opPing, payload[:])
+}
+
+// pong takes a pong as a round trip when it echoes the last ping exactly, and
+// only the first time. Anything else is left alone without a word: the
+// standard allows a pong nobody asked for, a pong to a ping since replaced is
+// merely late, and a payload made up to look like an earlier moment would
+// otherwise be believed. A client cannot answer a ping it has not received, so
+// once only the exact moment is taken, the round trip it reports can be made
+// longer by waiting but not made up.
+func (c *Conn) pong(payload []byte) {
+	if len(payload) != 8 {
+		return
+	}
+	sent := int64(binary.BigEndian.Uint64(payload))
+	// Zero is what the connection holds when no ping is waiting: matched, it
+	// would pass for a ping sent when the process started.
+	if sent == 0 || !c.lastPing.CompareAndSwap(sent, 0) {
+		return
+	}
+	if c.onRTT != nil {
+		c.onRTT(stamp() - time.Duration(sent))
+	}
 }
 
 func (c *Conn) writeFrame(opcode byte, payload []byte) error {

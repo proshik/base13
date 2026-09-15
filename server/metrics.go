@@ -88,8 +88,9 @@ type stats struct {
 	packets     atomic.Uint64
 	packetBytes atomic.Uint64
 	evicted     atomic.Uint64
-	worstGaps   histogram // over worstGapBuckets
-	forwards    histogram // over forwardBuckets
+	rtt         histogramVec // over platformLabels, rttBuckets
+	worstGaps   histogram    // over worstGapBuckets
+	forwards    histogram    // over forwardBuckets
 }
 
 // Why a connection was refused. Both limits reach the client as the same
@@ -149,6 +150,10 @@ var pairingWaitBuckets = durationBuckets(1, 2, 5, 10, 20, 30, 60, 120, 300, 600)
 // Time together from half a minute, a pair that met and parted at once, to two
 // hours, a long evening's match.
 var playedBuckets = durationBuckets(30, 60, 120, 300, 600, 1200, 1800, 3600, 7200)
+
+// A round trip to a player, from ten milliseconds, a neighbour on the same
+// network, to over a second and a half, a link no lockstep game survives.
+var rttBuckets = durationBuckets(0.01, 0.025, 0.05, 0.1, 0.2, 0.4, 0.8, 1.6)
 
 // The worst gap in a player's stream over a window, from three frames at sixty
 // a second, a hitch few notice, to a stall long enough to read as a dropped link.
@@ -282,6 +287,15 @@ func (s *stats) memberEvicted() {
 		return
 	}
 	s.evicted.Add(1)
+}
+
+// observeRTT observes one round trip to a player, under the platform their hello
+// named.
+func (s *stats) observeRTT(platform string, took time.Duration) {
+	if s == nil {
+		return
+	}
+	s.rtt.at(platformLabels, platformLabel(platform)).observeDuration(rttBuckets, took)
 }
 
 // observeWorstGap observes the longest a player's stream went quiet over one
@@ -449,6 +463,10 @@ func (s *server) writeMetrics(w io.Writer) {
 		"Rooms whose journal reached its cap and stopped taking records; "+
 			"a player who drops after that cannot catch up.",
 		counted.capped.Load())
+	e.histogramVec("relay_rtt_seconds",
+		"The round trip to a player, measured by the server's own pings as the player answers them, "+
+			"by the platform their hello named: the network between the two, observed about every twenty seconds per player.",
+		platformLabels, rttBuckets, &counted.rtt)
 	e.histogram("relay_packet_gap_worst_seconds",
 		"The longest a player's stream of packets went quiet in each window, observed once a window per player: "+
 			"jitter on the way to the server, and pauses in the game too.",

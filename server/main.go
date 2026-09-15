@@ -430,6 +430,12 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 	}()
 	room.Notify(member, event("joined", room.Occupants()))
 
+	// Set on the goroutine that reads, the only one that ever calls it, and
+	// before the writer that pings has started, so no answer comes back to find
+	// it missing.
+	conn.onRTT = func(took time.Duration) {
+		member.stats.observeRTT(member.client.platform, took)
+	}
 	go pump(conn, member, s.pingInterval())
 
 	// Stream evenness is measured here: the server sees both sides and can say

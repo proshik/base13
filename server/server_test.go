@@ -889,6 +889,60 @@ func TestAnsweringPingsKeepsTheConnection(t *testing.T) {
 	}
 }
 
+func TestRTTIsLabelledByPlatform(t *testing.T) {
+	// The network half of the lag, per platform: a browser on a phone and a
+	// desktop build sit behind very different links. Every client answers the
+	// server's pings on its own, echoing what they carry, the way this one does.
+	s := &server{hub: NewHub(), pingEvery: 50 * time.Millisecond}
+	addr, stop := serve(t, s)
+	defer stop()
+	count := func(platform string) string {
+		return `relay_rtt_seconds_count{platform="` + platform + `"}`
+	}
+	// Every platform has its series from the first scrape, before anyone plays.
+	none := map[string]float64{}
+	for _, platform := range testPlatforms {
+		none[count(platform)] = 0
+	}
+	expectSeries(t, s, none)
+
+	// Taken before the connection exists, so every ping it is answered for left
+	// after this moment.
+	began := time.Now()
+	player := dial(t, addr)
+	player.sendJSON(t, hello{Action: "quick", Game: "tanks", Seed: 1, Platform: "web", Version: "0.5.0"})
+	player.welcome(t)
+	for deadline := time.Now().Add(2 * time.Second); metricValue(t, s, count("web")) < 2; {
+		if time.Now().After(deadline) {
+			t.Fatalf("pings answered for two seconds gave %v round trips, expected at least 2",
+				metricValue(t, s, count("web")))
+		}
+		if opcode, payload := player.receiveFrame(t); opcode == opPing {
+			player.conn.Write(clientFrame(opPong, payload))
+		}
+	}
+	// The player goes, and once the room has let them go their reader has
+	// stopped: nothing more is measured, and the figures below hold still.
+	player.conn.Close()
+	eventually(t, func() bool { return metricValue(t, s, `relay_players{platform="web"}`) == 0 })
+	took := time.Since(began)
+
+	others := map[string]float64{}
+	for _, platform := range testPlatforms {
+		if platform != "web" {
+			others[count(platform)] = 0
+		}
+	}
+	expectSeries(t, s, others)
+	// Each round trip is no longer than the whole time the test watched pass,
+	// which is all a machine under any load can promise.
+	counted := metricValue(t, s, count("web"))
+	if sum := metricValue(t, s, `relay_rtt_seconds_sum{platform="web"}`); sum <= 0 || sum > counted*took.Seconds() {
+		t.Fatalf("%v round trips within %v summed to %vs", counted, took, sum)
+	}
+	checkExposition(t, renderMetrics(s))
+}
+
 func TestAMemberCutOffForFallingBehindIsDisconnected(t *testing.T) {
 	// The room drops a member whose queue overflowed. Unless the socket goes
 	// too, they sit on a connection that will never carry anything again and
