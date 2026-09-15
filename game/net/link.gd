@@ -35,5 +35,15 @@ func partner_present() -> bool:
 func dead() -> bool:
 	return false
 
+## How a stretch of play went on this side: `speed`, `waits`, `delay` and `fps`,
+## all whole numbers. Only a server can be told, so a direct link on the local
+## network and the links tests stand up take it and say nothing.
+func report_pace(_pace: Dictionary) -> void:
+	pass
+
+## The two worlds parted. Said once a match, for the same reason as above.
+func report_desync() -> void:
+	pass
+
 func close() -> void:
 	pass

@@ -55,6 +55,12 @@ var _now: Callable
 var _retry_at := 0
 var _give_up_at := 0
 var _client := {}
+## Whether the server's last welcome said it takes reports. A server from before
+## reports hands whatever follows the hello to the partner as a game packet, and a
+## report arriving there would be read as input. Taken again from every welcome,
+## a return after a drop included: the server on the other end may have been
+## replaced by an older one in between.
+var _reports := false
 
 ## now_provider is a seam for tests: otherwise the retry deadlines would have to
 ## be waited out for real. client is the same kind of seam for what the hello
@@ -170,6 +176,7 @@ func _handle_welcome(answer: Dictionary) -> void:
 		_fail("SLOT TAKEN")
 		return
 	slot = given
+	_reports = bool(answer.get("reports", false))
 	code = str(answer.get("code", code))
 	seed_value = int(answer.get("seed", seed_value))
 	players = int(answer.get("players", 1))
@@ -237,6 +244,33 @@ func send(data: PackedByteArray) -> void:
 	if state != State.READY or _socket == null:
 		return
 	_socket.send(data)
+
+## Reports travel as text, beside the room's housekeeping, and never among the
+## game's binary packets: the frame kind is what keeps them out of the partner's
+## stream. The server reads each figure as a whole number, so the caller hands
+## over ints — `JSON.stringify` writes an int as `97` and a float as `97.0`, and a
+## fractional frame rate would make the whole report malformed.
+func report_pace(pace: Dictionary) -> void:
+	_report({"report": pace})
+
+func report_desync() -> void:
+	_report({"desync": true})
+
+## Nothing goes to a server that did not announce reports, and nothing goes while
+## the link is not up: a report queued on a dying socket is lost anyway, and one
+## sent before the welcome would reach the server as a malformed hello.
+func _report(message: Dictionary) -> void:
+	if not _reports or state != State.READY or _socket == null:
+		return
+	# Keys in the order they were written rather than sorted: the server does
+	# not mind either, but a report read in a capture should read like the
+	# `[net]` line it came from.
+	_send_text(JSON.stringify(message, "", false))
+
+## A seam for tests: what goes onto the socket as text can be caught here without
+## standing a server up.
+func _send_text(text: String) -> void:
+	_socket.send_text(text)
 
 ## While the link is being restored, the game waits. The game screen shows this
 ## to the human; otherwise a frozen screen looks like a hang.

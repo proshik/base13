@@ -26,12 +26,14 @@ func _binary() -> String:
 
 ## The server takes its own port for every test: a neighbouring test may have
 ## left a port cooling down, and taking it again sometimes fails.
-func _start_server(offset: int) -> bool:
+func _start_server(offset: int, extra: Array[String] = []) -> bool:
 	if not FileAccess.file_exists(_binary()):
 		return false
 	var port := PORT_BASE + offset
 	_url = "ws://127.0.0.1:%d/ws" % port
-	_pid = OS.create_process(_binary(), ["-addr=127.0.0.1:%d" % port])
+	var args: Array[String] = ["-addr=127.0.0.1:%d" % port]
+	args.append_array(extra)
+	_pid = OS.create_process(_binary(), args)
 	if _pid <= 0:
 		return false
 	return _wait_until_listening(port)
@@ -80,6 +82,73 @@ func test_client_fields_cannot_override_the_action() -> void:
 	assert_eq(merged["action"], "create",
 		"a client-supplied field must never win over what the hello itself says")
 	assert_eq(merged["platform"], "linux", "fields the hello does not name still pass through")
+
+## A Relay that writes down the text it would put on the socket instead of
+## putting it there, so what the server announced can be fed straight in.
+class Speaker extends Relay:
+	var texts: Array[String] = []
+	var packets := 0
+	func _send_text(text: String) -> void:
+		texts.append(text)
+	func send(_data: PackedByteArray) -> void:
+		packets += 1
+
+## A seated Speaker, as if the server had just answered the hello.
+func _seated(answer: Dictionary) -> Speaker:
+	var relay := Speaker.new(Callable(), {"platform": "linux", "version": "1.2.3"})
+	# Never connected: the socket only has to exist, the way it does once seated.
+	relay._socket = WebSocketPeer.new()
+	relay._handle_welcome(answer)
+	return relay
+
+const PACE := {"speed": 97, "waits": 2, "delay": 8, "fps": 60}
+
+## A server from before reports hands whatever follows the hello to the partner
+## as a game packet. A report arriving there would be taken for input, so the
+## client reports only to a server that said it takes reports.
+func test_reports_are_sent_only_when_the_server_announced_them() -> void:
+	var old := _seated({"ok": true, "slot": 0, "code": "ABCDEF", "seed": 1, "players": 2})
+	old.report_pace(PACE)
+	old.report_desync()
+	assert_eq(old.texts, [] as Array[String], "a server that never announced reports was sent some")
+	assert_eq(old.packets, 0)
+
+	var current := _seated({"ok": true, "slot": 0, "code": "ABCDEF", "seed": 1, "players": 2,
+		"reports": true})
+	current.report_pace(PACE)
+	current.report_desync()
+	assert_eq(current.texts.size(), 2, "a server that announced reports heard nothing")
+
+	# Coming back after a drop to a server that no longer takes them.
+	current._resuming = true
+	current._handle_welcome({"ok": true, "slot": 0, "code": "ABCDEF", "seed": 1, "players": 2})
+	current.report_pace(PACE)
+	assert_eq(current.texts.size(), 2, "a return to an older server kept reporting to it")
+
+	# Nor while the link is down: there is nobody to hear it.
+	var dropped := _seated({"ok": true, "slot": 0, "code": "ABCDEF", "players": 2, "reports": true})
+	dropped.state = Relay.State.RETRYING
+	dropped.report_pace(PACE)
+	assert_eq(dropped.texts, [] as Array[String], "a report went out on a link that was not up")
+
+## The frame kind separates the two conversations: a report goes as text, the
+## way housekeeping does, and never among the game's binary packets. The server
+## reads its numbers exactly, so they are whole: `97`, not `97.0`.
+func test_a_report_goes_as_text_not_as_a_packet() -> void:
+	var relay := _seated({"ok": true, "slot": 1, "code": "ABCDEF", "players": 2, "reports": true})
+	relay.report_pace(PACE)
+	relay.report_desync()
+	assert_eq(relay.packets, 0, "a report went out as a game packet")
+	assert_eq(relay.texts, [
+		'{"report":{"speed":97,"waits":2,"delay":8,"fps":60}}',
+		'{"desync":true}',
+	] as Array[String])
+
+func test_a_fresh_relay_reports_nothing() -> void:
+	var relay := Relay.new(Callable(), {"platform": "linux", "version": "1.2.3"})
+	relay.report_pace(PACE)
+	relay.report_desync()
+	assert_eq(relay.state, Relay.State.IDLE)
 
 func _spin(clients: Array, check: Callable) -> bool:
 	for i in SPIN_LIMIT:
@@ -527,6 +596,87 @@ func test_a_heartbeat_is_what_lets_a_waiting_player_be_found() -> void:
 	assert_false(beating["cut"], "a heartbeat did not keep the link alive")
 	assert_true(beating["met"], "the partner did not find the waiting player")
 	assert_eq(beating["room"], beating["partner"], "they met in different rooms")
+
+## Reads the server's metrics page. Empty if it could not be read.
+func _scrape(port: int) -> String:
+	var http := HTTPClient.new()
+	if http.connect_to_host("127.0.0.1", port) != OK:
+		return ""
+	for i in SPIN_LIMIT:
+		http.poll()
+		var status := http.get_status()
+		if status == HTTPClient.STATUS_CONNECTED:
+			break
+		if status != HTTPClient.STATUS_CONNECTING and status != HTTPClient.STATUS_RESOLVING:
+			return ""
+		OS.delay_msec(5)
+	if http.request(HTTPClient.METHOD_GET, "/metrics", []) != OK:
+		return ""
+	for i in SPIN_LIMIT:
+		http.poll()
+		if http.get_status() != HTTPClient.STATUS_REQUESTING:
+			break
+		OS.delay_msec(5)
+	if not http.has_response():
+		return ""
+	var body := PackedByteArray()
+	for i in SPIN_LIMIT:
+		if http.get_status() != HTTPClient.STATUS_BODY:
+			break
+		http.poll()
+		var chunk := http.read_response_body_chunk()
+		if chunk.is_empty():
+			OS.delay_msec(5)
+		else:
+			body.append_array(chunk)
+	http.close()
+	return body.get_string_from_utf8()
+
+## The report a real client writes, read by the real server: counted as a window
+## and a desync, never as malformed, and never handed to the partner. Each side's
+## tests pin its half of the wire; only here do the halves meet.
+func test_the_server_counts_what_the_client_reports() -> void:
+	if _skip_without_binary():
+		return
+	var metrics_port := PORT_BASE + 12 + 100
+	assert_true(_start_server(12, ["-metrics-addr=127.0.0.1:%d" % metrics_port]),
+		"the server did not start")
+	var host := Relay.new(Callable(), {"platform": "linux", "version": "1.2.3"})
+	var guest := Relay.new(Callable(), {"platform": "web", "version": "1.2.3"})
+	assert_true(_pair(host, guest), "the pair did not come together")
+	assert_true(host._reports, "the server's welcome did not announce reports")
+	var to_guest := []
+	guest.packet_received.connect(func(data: PackedByteArray) -> void: to_guest.append(data))
+
+	# The figures test_net_input.gd sees NetInput hand to its link.
+	host.report_pace({"speed": 99, "waits": 5, "delay": 8, "fps": 60})
+	host.report_desync()
+	var page := [""]
+	var counted := _spin([host, guest], func() -> bool:
+		page[0] = _scrape(metrics_port)
+		return page[0].contains('relay_client_windows_total{platform="linux",verdict="smooth"} 1') \
+			and page[0].contains('relay_desynced_matches_total{kind="code"} 1'))
+	assert_true(counted, "the server never counted the report:\n%s" % _lines_about(page[0],
+		["relay_client_windows_total", "relay_client_reports_rejected_total", "relay_desynced_matches_total"]))
+	assert_string_contains(page[0], 'relay_client_reports_rejected_total{why="malformed"} 0')
+	assert_string_contains(page[0], 'relay_client_reports_rejected_total{why="early"} 0')
+	assert_string_contains(page[0], "relay_client_input_delay_ticks_sum 8")
+	assert_string_contains(page[0], "relay_client_waits_total 5")
+	for i in 20:
+		host.poll()
+		guest.poll()
+		OS.delay_msec(5)
+	assert_eq(to_guest.size(), 0, "a report reached the partner as a game packet")
+	host.close()
+	guest.close()
+
+func _lines_about(page: String, prefixes: Array[String]) -> String:
+	var kept: PackedStringArray = []
+	for line in page.split("\n"):
+		for prefix in prefixes:
+			if line.begins_with(prefix):
+				kept.append(line)
+	return "\n".join(kept)
 
 ## A partner who shut their window is silent in exactly the way one who merely
 ## looked away is. Only the room can tell them apart, and it does: occupancy

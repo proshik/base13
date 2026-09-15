@@ -104,6 +104,7 @@ var last_report := ""
 var _link: Link
 var _lockstep: Lockstep
 var _bits_provider: Callable
+var _fps_provider: Callable
 
 ## What a stretch of play looked like: how many ticks waited, the longest wait,
 ## and how much of the partner's input there was to rest on.
@@ -156,11 +157,15 @@ class Tally:
 ## the other waiting for tick five from a partner who had never meant to send it,
 ## while that partner waited for its tick eleven — frozen for good, both of them
 ## present.
+##
+## fps_provider is the same kind of seam for the frame rate the report carries:
+## the engine's own figure depends on the machine running the test.
 func _init(link: Link, local_index: int, bits_provider := Callable(),
-		input_delay := Lockstep.DELAY) -> void:
+		input_delay := Lockstep.DELAY, fps_provider := Callable()) -> void:
 	_link = link
 	_lockstep = Lockstep.new(local_index)
 	_bits_provider = bits_provider
+	_fps_provider = fps_provider
 	_link.packet_received.connect(handle_packet)
 	# Taken from the link rather than assumed: a level can be built while the
 	# relay is still greeting after a drop, and the band below would go nowhere.
@@ -405,13 +410,29 @@ func _partner_slack() -> int:
 ## ours. While it stays near the input delay, the game runs off the clock.
 ## Sagging to zero means every tick waits for a packet, and the network is at
 ## fault rather than the game.
+##
+## The same figures go to the link, which passes them to a relay that takes
+## reports: the server can see the network, but only this side sees a machine
+## that cannot keep up. They go here, once a line, and not with every second's
+## window: the server hears a connection about once in four seconds and would
+## turn most of a report a second away.
 func _print_report() -> void:
 	var elapsed := maxi(1, _clock() - _report.began)
 	var expected := REPORT_EVERY * 1000 / 60
+	var speed := expected * 100 / elapsed
 	print("[net] %d ticks in %d ms (norm %d), speed %d%%, waits %d (longest %d ms), slack: worst %d, average %d, delay %d" % [
-		REPORT_EVERY, elapsed, expected, expected * 100 / elapsed,
+		REPORT_EVERY, elapsed, expected, speed,
 		_report.waited, _report.longest_ms, _report.cover_min,
 		_report.cover_sum / maxi(1, _report.samples), _lockstep.delay])
+	_link.report_pace({"speed": speed, "waits": _report.waited,
+		"delay": _lockstep.delay, "fps": _fps()})
+
+## Frames drawn a second, whole. The engine measures a float, and a display at
+## 59.94 Hz would make the server throw the whole report away as malformed.
+func _fps() -> int:
+	var fps: float = _fps_provider.call() if _fps_provider.is_valid() \
+		else Engine.get_frames_per_second()
+	return int(round(fps))
 
 func _clock() -> int:
 	return Time.get_ticks_msec()
@@ -436,5 +457,10 @@ func handle_packet(data: PackedByteArray) -> void:
 			# further and further, and the players cannot tell why they see
 			# different things.
 			if not _lockstep.check_remote_hash(packet["tick"], packet["hash"]):
+				# Told once: every later hash from the partner mismatches too,
+				# and the server counts a second word of it as out of turn.
+				var first := not desynced
 				desynced = true
 				desync_tick = packet["tick"]
+				if first:
+					_link.report_desync()

@@ -188,3 +188,86 @@ func test_a_band_sent_before_the_link_was_up_goes_out_when_it_is() -> void:
 	net.pump()
 	for tick in range(Lockstep.DELAY, 11):
 		assert_true(link.wire.has(tick), "tick %d of the band never went out" % tick)
+
+## A link that writes down what the game told the server about itself.
+class Reporter extends Link:
+	var paces: Array[Dictionary] = []
+	var desyncs := 0
+	func report_pace(pace: Dictionary) -> void:
+		paces.append(pace)
+	func report_desync() -> void:
+		desyncs += 1
+
+## The report's figures are measured against a clock, so the test turns it.
+class ReportClocked extends NetInput:
+	var now := 0
+	func _clock() -> int:
+		return now
+
+## Ticks `from` up to `to`, the partner's input always in time, except that the
+## tenth tick of every second stands `wait_ms` before it comes. One wait a second
+## is tolerated, so the delay neither grows nor comes down while this plays.
+func _play(net: ReportClocked, from: int, to: int, wait_ms: int) -> void:
+	for t in range(from, to):
+		net.capture(t)
+		if t % NetInput.WINDOW == 10:
+			assert_false(net.can_advance(t), "tick %d was meant to wait" % t)
+			net.now += wait_ms
+		net.handle_packet(Protocol.pack_input(t, 0))
+		assert_true(net.can_advance(t), "tick %d is not computed" % t)
+		net.after_tick(t, 0)
+		net.now += 1000 / 60
+
+## The server hears the same figures the `[net]` line prints, once a line: the
+## server lets a connection report about once in four seconds, and a report every
+## second would be turned away four times out of five.
+func test_each_window_sends_one_report() -> void:
+	var link := Reporter.new()
+	var net := ReportClocked.new(link, 0, func(_t: int) -> int: return 0, 8,
+		func() -> float: return 59.94)
+	_play(net, 0, NetInput.REPORT_EVERY - 1, 50)
+	assert_eq(link.paces.size(), 0, "a report went out before its three hundred ticks")
+	_play(net, NetInput.REPORT_EVERY - 1, NetInput.REPORT_EVERY, 50)
+	assert_eq(link.paces.size(), 1, "three hundred ticks must bring exactly one report")
+	if link.paces.size() != 1:
+		return
+	# 299 ticks of 16 ms and five waits of 50 took 5034 ms against the 5000 due:
+	# 500000 / 5034 is 99 in whole percent, the way the line prints it.
+	assert_eq(link.paces[0], {"speed": 99, "waits": 5, "delay": 8, "fps": 60},
+		"the report differs from the printed figures")
+	assert_eq(net.delay(), 8, "the delay moved, and the test no longer shows which one is sent")
+	for key in link.paces[0]:
+		assert_eq(typeof(link.paces[0][key]), TYPE_INT,
+			"%s is not a whole number, and 59.94 frames would make the report malformed" % key)
+	_play(net, NetInput.REPORT_EVERY, 2 * NetInput.REPORT_EVERY - 1, 50)
+	assert_eq(link.paces.size(), 1, "the windows between two reports sent one of their own")
+
+## A desync is noticed once and reported once: every later hash from the partner
+## mismatches too, and the server counts a repeat as a connection talking out of
+## turn.
+func test_a_desync_is_reported_once() -> void:
+	var link := Reporter.new()
+	var net := NetInput.new(link, 0)
+	net.after_tick(60, 12345)
+	net.after_tick(120, 12345)
+	net.handle_packet(Protocol.pack_hash(60, 999))
+	assert_eq(link.desyncs, 1, "a desync went unreported")
+	net.handle_packet(Protocol.pack_hash(120, 999))
+	assert_true(net.desynced)
+	assert_eq(link.desyncs, 1, "the same desync was reported twice")
+
+func test_matching_hashes_report_no_desync() -> void:
+	var link := Reporter.new()
+	var net := NetInput.new(link, 0)
+	net.after_tick(60, 12345)
+	net.handle_packet(Protocol.pack_hash(60, 12345))
+	assert_eq(link.desyncs, 0)
+
+## A link on the local network has no server to tell: the base shape takes the
+## reports and does nothing with them.
+func test_a_link_without_reports_is_left_alone() -> void:
+	var net := ReportClocked.new(Link.new(), 0, func(_t: int) -> int: return 0)
+	_play(net, 0, NetInput.REPORT_EVERY, 0)
+	net.handle_packet(Protocol.pack_hash(60, 999))
+	assert_true(net.desynced, "the game went on as if nothing had parted")
+	assert_eq(net.delay(), Lockstep.DELAY)
