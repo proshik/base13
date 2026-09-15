@@ -19,6 +19,8 @@ Application identifier: `com.proshik.base13`.
 - Deployment plan (next up): `docs/plans/2026-09-04-deployment.md`
 - Hardening plan (closed, gates the deployment's release): `docs/plans/2026-09-12-hardening.md`
 - Homebrew cask plan (after the deployment): `docs/plans/2026-09-04-homebrew-cask.md`
+- Network lag plan (adaptive delay, carried between levels, gates the next release):
+  `docs/plans/2026-09-14-network-lag.md`
 
 The work is split into four subprojects: **1** the core and the single-player game,
 **2** mobile platforms, **3** network co-op, **4** release to the stores.
@@ -257,26 +259,57 @@ Rakes we have already stepped on:
 - **Do not create resources by copying at runtime if they are playing at exit time.** A
   looped sound made with `duplicate()` is not freed, and Godot reports a leak.
 - **Tick time is charged for ticks that happened, not for ticks that came due.** In a
-  network game a tick may not happen: the other side's input is not there yet. Charged
-  for nothing, it is lost forever — the lockstep buffer drains, and the game goes from
-  sixty ticks per second to one tick per network round trip. Hence `TickPump` has
-  separate `due()` and `spend()`, and the caller reports how many ticks it actually
-  computed.
-- **Stutter in a network game is about jitter, not about average latency.** At 30±40 ms
-  five ticks of input delay is enough; at 30±80 ms smoothness falls to 47%: the average
-  is the same, but every late packet is a frozen frame. That is why input delay grows by
-  itself (`NetInput.grow_delay`) instead of being a fixed number.
+  network game a tick may not happen: the other side's input is not there yet. Hence
+  `TickPump` has separate `due()` and `spend()`, and the caller reports how many ticks it
+  actually computed and whether it stopped for the partner.
+- **But a wait is caught up only by half.** A lockstep pair has one pace, the slower
+  side's. A side that caught up all of its waiting raced to the very edge of the
+  partner's input and stood there: every late packet froze its picture alone, and its
+  own delay growing did nothing for it — our delay is the partner's slack, not ours.
+  After a partner's two-second tab switch the side that came back waited on every tick
+  until the level ended. Letting half go moves the waiting side back and shares the
+  slack; letting all of it go costs speed while the network falls short.
+- **A freeze is forgotten whole, and on both sides alike.** Cutting a long stand down to
+  `MAX_DEBT` instead left two sides holding different debts after one tab switch — the
+  imbalance above, from another door. And forget only on a frame that actually waited:
+  forgetting on every frame of a long stand froze the game for good, because a 60 Hz
+  frame (16.666 ms) is a hair short of a tick and nothing was ever due again.
+- **The two input delays together cover the circle, not one delay one way.** A tick
+  needs the partner's input, which left when they were a delay behind, which needed ours:
+  `(D_A + D_B) × 16.7 ms ≥ circle + two frames`. Five and five cover about 130 ms; a relay
+  in Moscow is four legs of about sixty. `game/tests/net/test_lag_profiles.gd` plays two
+  sides through a link with delays and jitter and records where each profile settles —
+  the numbers to argue from, not impressions.
+- **The delay is reconsidered every second, not every five.** Five seconds of computed
+  ticks, stretched further while the game stood waiting, meant ten to twenty seconds of
+  stutter before the delay caught up with a slow path. And waits are counted per tick,
+  not per frame: at 144 Hz one wait is six frames.
+- **Judged by its own slack, the side with the smaller delay comes down first.** Our
+  slack is the partner's delay, so the delays split apart — five against sixteen, for the
+  rest of the match. Only the side whose delay is not smaller gives slack back; the
+  partner's delay is read off the order of their packets (the input furthest ahead when
+  their hash for a tick arrives), no packet of its own needed.
+- **A new `NetInput` for every level threw the learnt delay away** — ten seconds of
+  stutter at the start of every level. The delay is carried, but taken on by growing to
+  it before the first tick: a side simply starting at eleven sent input for tick eleven
+  first, while the other side, filled in only to tick four, waited for tick five for
+  good.
 - **When raising the input delay, fill the band between the old and the new horizon.**
   Our input will no longer be submitted for those ticks in the normal course of things,
   and the partner is waiting for them — the result is not a stutter but a match frozen
-  solid. The two sides are free to hold different delays: the tick number travels in the
-  packet itself.
+  solid. The band carries the keys held right now: it used to go out as zero in the game,
+  and a tank driven forward let go every time the delay grew.
+- **Input sent while the relay link was down is lost, and the partner waits for it
+  forever.** The relay journals only what reached it and replays to a returning side the
+  partner's stream, never its own. `NetInput` sends its recent input again when the link
+  comes back — from a whole delay back, not from its last tick: the partner may hold a
+  larger delay and still need input for ticks we have already computed.
 - **"It lags" without numbers is unverifiable.** Every five seconds `NetInput` prints a
-  `[net]` line: how much real time went into three hundred ticks, how many waits there
-  were, and how much of the partner's input is buffered. A rate below a hundred percent
-  with zero waits means the machine is to blame; waits with a shrinking buffer mean the
-  network is. Visible in the terminal on desktop and in the developer console in the
-  browser.
+  `[net]` line: real time for three hundred ticks, the speed against the clock, how many
+  ticks waited and the longest wait, the partner's slack and the current delay; growth
+  prints its own line. Speed below a hundred with no waits means the machine is to blame;
+  waits with the slack at zero mean the network. `L` puts the last second's numbers on
+  screen. Visible in the terminal on desktop and in the developer console in the browser.
 - **The macOS export must sign the app itself** (`codesign/codesign=1` in the preset).
   Without it the application carries away the *engine template's* signature, which stops
   matching once the game's bundle is assembled, and macOS says "damaged, move to the
@@ -317,6 +350,10 @@ Rakes we have already stepped on:
   `signal.connect(func(): got = true)` the assignment never escapes, and the check will
   see `false` forever. To accumulate a result inside a handler you need an array or a
   dictionary: those are by reference, and the change is visible from outside.
+- **An inner class named after an engine global does not compile.** `class Side` meets
+  the `Side` enum from `@GlobalScope` ("Cannot get property from enum value"), and
+  `class Window` fails with "Class "Window" hides a native class". Pick a name the engine
+  has not taken.
 - **Checking "the sound is not silence" byte by byte lies.** For a flat square wave the
   low byte is zero in every sample — you have to decode pairs.
 - **Recreating the repository orphans its container package.** A package is tied to the

@@ -370,13 +370,16 @@ Expected: they play. Note `wss`, not `ws`: behind TLS the plain scheme is refuse
 
 - [ ] **Step 5: Read the numbers, not the impressions**
 
-While playing, watch the `[net]` lines — the terminal on desktop, the developer console in the browser:
+While playing, watch the `[net]` lines — the terminal on desktop, the developer console in the browser. `L` puts the last second's numbers on screen as well:
 
 ```
-[net] 300 ticks in 4986 ms (nominal 5000), rate 100%, waits 0 ...
+[net] 300 ticks in 4983 ms (norm 5000), speed 100%, waits 0 (longest 0 ms), slack: worst 1, average 3, delay 10
+[net] many waits — input delay raised to 11 ticks (183 ms)
 ```
 
-A rate below a hundred with zero waits means the machine cannot keep up. Waits with a shrinking buffer mean the network. Over the real internet the input delay is expected to climb above the initial five ticks by itself — that is the adaptive delay working, not a fault.
+A line every five seconds: real time for three hundred ticks, the speed against the clock, how many ticks waited for the partner and the longest wait, how many ticks of the partner's input were in hand at worst and on average, and the input delay. The delay is reconsidered every second, and every growth prints its own line.
+
+Speed below a hundred with no waits means the machine cannot keep up. Waits with the slack at zero mean the network. Through the relay the first level starts at a delay of eight; over the real internet it is expected to settle within a few seconds — around ten on a path to Moscow — to show `waits` near zero after that, and **not** to start over at the next level. A delay that keeps climbing, or waits that do not stop, are what to report, with these lines from both sides.
 
 On the server side:
 

@@ -76,13 +76,63 @@ network that is not possible: the partner's input is still in flight.
 
 ### Input delay
 
-A press made on tick `N` is applied by both sides on tick `N + DELAY`. In that time the
-packet gets across. At `DELAY = 5` that is 83 milliseconds — for a game where a tank
-covers three quarters of a pixel per tick, almost imperceptible.
+A press made on tick `N` is applied by both sides on tick `N + D`, where `D` is the
+pressing side's input delay. In that time the packet gets across.
 
 A tick is computed only once the input of **both** sides for that number is known. If a
 packet is late, the game freezes for a frame or two and waits. Freezing together is
 right; drifting apart is not.
+
+### The two delays together cover the circle
+
+A tick needs the partner's input for it. That input left the partner when they were a
+delay behind the tick, and they got there only once our input for *their* tick had
+arrived. So what one delay has to cover is not one way across but the whole circle, our
+packet to the partner and theirs back to us:
+
+```
+(D_ours + D_theirs) × 16.7 ms ≥ circle + two frames
+```
+
+The two frames are the socket being polled once a frame on each side. No shared clock is
+needed: the sides settle into a phase relative to each other, and the phase absorbs any
+asymmetry between the two ways. `5 + 5` covers a circle of about 130 ms — plenty on a
+local network, not nearly enough through a relay in Moscow, where four legs of about
+sixty milliseconds make a circle near a quarter of a second.
+
+### The delay adapts
+
+The value needed depends on the network, not on the game, so it is not a constant:
+
+- **Start.** Five ticks on a local network. Eight for the first level through the relay.
+- **Window.** The delay is reconsidered every sixty computed ticks, about a second.
+- **Growth.** When more than one tick waited in the window, the delay grows by the
+  shortfall the waits show, halved because both sides grow in the same second: the share
+  of the window spent waiting for a circle that is steadily too long, the second longest
+  wait for jitter. The longest wait is left out — one wait is a hitch, what the network
+  lacks is what repeats. At most six ticks a window, never past sixteen (266 ms).
+- **What is not a wait.** A wait shorter than a tick (a fast display asks early), and a
+  wait longer than 150 ms (a frame loop that stopped: a hidden tab, a dragged window).
+- **Descent.** One tick a calm window, and only with two ticks to spare in the partner's
+  slack. The partner's slack cannot be seen, so it is reckoned: our slack plus the
+  difference between our delay and theirs. Their delay is read off their own packets —
+  the input furthest ahead when their hash for a tick arrives is exactly their delay past
+  it. Judged by our own slack alone, the side with the smaller delay came down first and
+  the delays split apart.
+- **Growing fills the band.** Our input for the ticks between the old horizon and the new
+  one goes out at once, carrying the keys held right now.
+- **Carried between levels.** A level starts with the delay the last one ended with. It is
+  taken on by growing to it before the first tick: both sides always fill in exactly five
+  ticks of both players' input, so two sides with different delays never wait for each
+  other for good.
+
+The pace of the frame loop takes part too. A side that catches up all of a wait races
+back to the edge of the partner's input and stands there, and every late packet freezes
+its picture alone; so half of each wait is caught up and half is let go. A freeze longer
+than half a second, ours or the partner's, is forgotten whole on both sides.
+
+`game/tests/net/test_lag_profiles.gd` plays two sides through a link with delays and
+jitter and records where each profile settles.
 
 ### Why not rollback
 
@@ -138,7 +188,9 @@ identical enemy waves across all thirty-five levels without a single extra byte.
 - The buffer: a tick is computed only with input from both sides; out-of-order input;
   a duplicate packet; a late packet; input far in the future does not break the buffer.
 - A hash divergence is detected on the very first comparison.
-- Delay: a press on tick N is applied on N + DELAY, not earlier.
+- Delay: a press on tick N is applied on N + D, not earlier.
+- Two sides through a link with delays and jitter stop waiting within seconds, and a
+  partner's tab switch does not drive the delay to the ceiling.
 
 Not tested: `WebSocketPeer` itself and the screens — those are checked by running them
 on two machines.

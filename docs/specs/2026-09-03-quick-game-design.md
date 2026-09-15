@@ -206,6 +206,32 @@ All five criteria above are closed.
 Not verified: the image on a real VPS behind somebody else's proxy. That will be verified
 on the first deployment — there is no machine yet.
 
+### Lag over the internet (`docs/plans/2026-09-14-network-lag.md`)
+
+Nobody had measured the game over the internet: both specs were checked on loopback. A
+path from here to the relay in Moscow measured an RTT of 107 ms at the median, 143 at
+p90, 239 at worst — a circle of about a quarter of a second for the two delays together,
+which the starting five and five do not cover.
+
+`game/tests/net/test_lag_profiles.gd` plays two sides through a link with that shape of
+delay, frame by frame on the production code.
+
+- Before: with a leg of 60 ± 20 ms, 25–30 ticks a second waited for twelve seconds while
+  the delay crept 5 → 8 → 11, and every level started again from five. After a partner's
+  two-second tab switch, the side that came back waited on every tick until the level
+  ended.
+- After: the same path settles at 10 / 10 within three seconds and then waits on at most
+  one tick a second, at 98 % of the clock; the delay carries into the next level; a tab
+  switch settles at once. With legs of 120 ± 40 ms the delay goes to the ceiling of 16 and
+  five to seven ticks a second still wait — that circle is longer than the ceiling
+  covers.
+- A drop mid-game through the real relay (`test_relay.gd`) no longer freezes the match:
+  before, it stopped for good at the tick the dropped side's input was lost.
+
+Not verified yet: the same over a real path. The baseline from the old client and the
+numbers after the release — `[net]` lines from both sides and the relay's worst gaps —
+are recorded at the release, on the deployment plan's own step 6.
+
 ## 12. The twelve factors
 
 Checked against the list. Eight were satisfied straight away, three had to be finished,
