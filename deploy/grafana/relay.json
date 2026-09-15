@@ -982,7 +982,7 @@
       "id": 19,
       "type": "timeseries",
       "title": "Players' game speed, p10",
-      "description": "How fast players' games ran, as a share of full speed (sixty ticks a second), by platform: one player window in ten ran this slow or slower. A 300-tick period that held a freeze longer than 150 ms (a partner's hidden tab, a relay drop and return, the player's own hidden tab) is not reported at all, so these figures describe play that was running. Freezes show on the server's side, in the worst gap and in disconnects and returns. Self-reported by the player's side: a client can forge these figures within the bounds the server clamps them to, and a handful of forgers can bend a distribution. Only network games played through this server report; single-player and LAN games are not measured. ",
+      "description": "How fast players' games ran, as a share of full speed (sixty ticks a second), by platform: one player window in ten ran this slow or slower. A window in which the game stood frozen (a partner's hidden tab, a relay drop and return, the player's own hidden tab) is reported like any other: it reads as low speed with no waits, the machine verdict. Before blaming players' machines, check the worst gap, where a stand shows as a gap of seconds. Self-reported by the player's side: a client can forge these figures within the bounds the server clamps them to, and a handful of forgers can bend a distribution. Only network games played through this server report; single-player and LAN games are not measured. ",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1040,7 +1040,7 @@
       "id": 20,
       "type": "timeseries",
       "title": "Windows by verdict",
-      "description": "Shares of reported windows: smooth at 95% of full speed or more; below that, network if the game waited for the partner's input, machine if it never did. Network: look at RTT and the worst gap. Machine: look at FPS for that platform. A 300-tick period that held a freeze longer than 150 ms (a partner's hidden tab, a relay drop and return, the player's own hidden tab) is not reported at all, so these figures describe play that was running. Freezes show on the server's side, in the worst gap and in disconnects and returns. Self-reported by the player's side: a client can forge these figures within the bounds the server clamps them to, and a handful of forgers can bend a distribution. Only network games played through this server report; single-player and LAN games are not measured. ",
+      "description": "Shares of reported windows: smooth at 95% of full speed or more; below that, network if the game waited for the partner's input, machine if it never did. Network: look at RTT and the worst gap. Machine: look at FPS for that platform, and at the worst gap, since the machine share includes frozen stands. A window in which the game stood frozen (a partner's hidden tab, a relay drop and return, the player's own hidden tab) is reported like any other: it reads as low speed with no waits, the machine verdict. Before blaming players' machines, check the worst gap, where a stand shows as a gap of seconds. Self-reported by the player's side: a client can forge these figures within the bounds the server clamps them to, and a handful of forgers can bend a distribution. Only network games played through this server report; single-player and LAN games are not measured. ",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1098,7 +1098,7 @@
       "id": 21,
       "type": "timeseries",
       "title": "Input delay, p50 and p90",
-      "description": "The input delay players' games ran at, in ticks: five on a smooth link, up to sixteen on a ragged one. A 300-tick period that held a freeze longer than 150 ms (a partner's hidden tab, a relay drop and return, the player's own hidden tab) is not reported at all, so these figures describe play that was running. Freezes show on the server's side, in the worst gap and in disconnects and returns. Self-reported by the player's side: a client can forge these figures within the bounds the server clamps them to, and a handful of forgers can bend a distribution. Only network games played through this server report; single-player and LAN games are not measured. Bucket bounds are whole numbers, which Prometheus 3 stores as 5.0: read them through quantiles, never by selecting a bound's text.",
+      "description": "The input delay players' games ran at, in ticks: five on a smooth link, up to sixteen on a ragged one. A window in which the game stood frozen (a partner's hidden tab, a relay drop and return, the player's own hidden tab) is reported like any other: it reads as low speed with no waits, the machine verdict. Before blaming players' machines, check the worst gap, where a stand shows as a gap of seconds. Self-reported by the player's side: a client can forge these figures within the bounds the server clamps them to, and a handful of forgers can bend a distribution. Only network games played through this server report; single-player and LAN games are not measured. Bucket bounds are whole numbers, which Prometheus 3 stores as 5.0: read them through quantiles, never by selecting a bound's text.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1167,7 +1167,7 @@
       "id": 22,
       "type": "timeseries",
       "title": "Players' frame rate, p10",
-      "description": "Frames a second players' sides drew over a reported window, by platform: one window in ten drew this few or fewer. A 300-tick period that held a freeze longer than 150 ms (a partner's hidden tab, a relay drop and return, the player's own hidden tab) is not reported at all, so these figures describe play that was running. Freezes show on the server's side, in the worst gap and in disconnects and returns. Self-reported by the player's side: a client can forge these figures within the bounds the server clamps them to, and a handful of forgers can bend a distribution. Only network games played through this server report; single-player and LAN games are not measured. ",
+      "description": "Frames a second players' sides drew over a reported window, by platform: one window in ten drew this few or fewer. A window in which the game stood frozen (a partner's hidden tab, a relay drop and return, the player's own hidden tab) is reported like any other: it reads as low speed with no waits, the machine verdict. Before blaming players' machines, check the worst gap, where a stand shows as a gap of seconds. Self-reported by the player's side: a client can forge these figures within the bounds the server clamps them to, and a handful of forgers can bend a distribution. Only network games played through this server report; single-player and LAN games are not measured. ",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"

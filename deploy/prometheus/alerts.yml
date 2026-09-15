@@ -142,7 +142,7 @@ groups:
     rules:
       - alert: RelayPlayersLag
         # Self-reported: a client sends its pace, and a forger can bend this share.
-        # Only a pace that was running is reported; freezes show in the worst gap.
+        # Frozen stands (a hidden tab, a relay drop) are reported too, as machine.
         # At least 0.1 windows a second, so one player's bad evening is not an alert.
         expr: >-
           (
@@ -160,9 +160,10 @@ groups:
           description: >-
             Players report their games running slow. Check first the verdict shares on the
             dashboard: network means their games waited for the partner's input (look at RTT
-            and worst gap by platform); machine means they never waited and the device could
-            not keep up (look at FPS by platform). If the server's forward delay is up too,
-            the server is the cause.
+            by platform and the worst gap); machine means they never waited, which is a device
+            that could not keep up (look at FPS by platform) or a game that stood frozen, a
+            hidden tab or a relay drop (look at the worst gap first). If the server's forward
+            delay is up too, the server is the cause.
 
       - alert: RelayDesync
         expr: sum by (instance, kind) (increase(relay_desynced_matches_total{job="relay"}[1h])) > 0

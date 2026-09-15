@@ -413,19 +413,22 @@ A match that stutters has one of three causes, and the Lag and performance row t
 apart with the same rule as the `[net]` lines:
 
 - **Speed below 95% with waits** — the game stood waiting for the partner's input: the
-  network. Look at the round trip and the worst gap for that platform.
-- **Speed below 95% without waits** — nothing was waited for, and the device still did not
-  keep up: the player's machine. The frame rate by platform shows which.
+  network. Look at the round trip for that platform, and at the worst gap.
+- **Speed below 95% without waits** — nothing was waited for: the player's machine, or a
+  frozen stand. The frame rate by platform shows a machine that cannot keep up; the worst
+  gap shows a stand.
 - **Round trip high, worst gap low** — a slow but steady path. The input delay absorbs it:
   the delay's p90 rises and the speed holds.
 - **Worst gap high, round trip normal** — jitter: Wi-Fi or a mobile link. The delay climbs
   towards sixteen.
 - **Forward delay high** — the server itself. Check the Go scheduler latency and CPU first.
 
-The pace, verdict, frame rate and input delay panels describe play that was running. A client
-skips the report for a 300-tick period that held a freeze longer than 150 ms — a partner's
-hidden tab, a relay drop and return, its own hidden tab — so freezes do not show there. They
-show on the server's side: in the worst gap, and in disconnects and returns.
+The `machine` share includes frozen stands. A window in which the game stood still — a
+partner's hidden tab, a relay drop and return, the player's own hidden tab — is reported like
+any other, and it reads as low speed with no waits, which is the `machine` verdict. So before
+blaming players' machines, look at `relay_packet_gap_worst_seconds`: a stand shows there as a
+gap of seconds, and a slow machine does not. The same windows pull down the speed and frame
+rate panels.
 
 What else the figures do not say:
 
