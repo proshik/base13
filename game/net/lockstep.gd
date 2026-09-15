@@ -63,6 +63,10 @@ func submit_local(tick: int, bits: int) -> void:
 	if not _local.has(tick):
 		_local[tick] = bits
 
+## Our own input for a tick, as it was sent. Zero for a tick we never pressed.
+func local_input(tick: int) -> int:
+	return _local.get(tick, 0)
+
 ## A repeated packet does not overwrite what was accepted: networks duplicate,
 ## and changing what has already been computed is precisely a desync.
 func submit_remote(tick: int, bits: int) -> void:

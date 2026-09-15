@@ -121,3 +121,56 @@ func test_a_later_level_starts_where_the_last_one_ended() -> void:
 	assert_eq(NetInput.starting_delay(Relay.new(), 12), 12)
 	assert_eq(NetInput.starting_delay(Session.new(), 7), 7)
 	assert_eq(NetInput.starting_delay(Relay.new(), 99), NetInput.MAX_DELAY)
+
+## A link that goes down and comes back, the way the relay does: whatever is sent
+## while it is down goes nowhere.
+class Flaky extends Link:
+	var up := true
+	var wire: Array[int] = []    ## ticks of the input packets that got out
+	func send(data: PackedByteArray) -> void:
+		if not up:
+			return
+		var packet := Protocol.unpack(data)
+		if packet.get("kind", Protocol.Kind.INVALID) == Protocol.Kind.INPUT:
+			wire.append(packet["tick"])
+	func linked() -> bool:
+		return up
+
+## While the link is down the game carries on for a while on what the partner
+## already sent, and our input for those ticks is lost: the relay journals only
+## what reached it. Unless it goes out again once the link is back, the partner
+## waits for it forever.
+##
+## Again from a whole delay back, not just past our last tick: the partner may
+## hold a larger delay than ours and be that far behind, still needing input for
+## ticks we have already computed.
+func test_input_lost_while_the_link_was_down_goes_out_again() -> void:
+	var link := Flaky.new()
+	var net := NetInput.new(link, 0, func(_t: int) -> int: return 0)
+	for t in range(Lockstep.DELAY, 40):
+		net.handle_packet(Protocol.pack_input(t, 0))
+	for t in 10:
+		net.capture(t)
+		assert_true(net.can_advance(t))
+		net.after_tick(t, 0)
+	link.up = false
+	net.pump()
+	for t in range(10, 20):
+		net.capture(t)
+		assert_true(net.can_advance(t))
+		net.after_tick(t, 0)
+	link.up = true
+	link.wire.clear()
+	net.pump()
+	for tick in range(10 + Lockstep.DELAY, 20 + Lockstep.DELAY):
+		assert_true(link.wire.has(tick),
+			"our input for tick %d was lost with the link and never sent again" % tick)
+
+func test_a_link_that_stays_up_sends_nothing_again() -> void:
+	var link := Flaky.new()
+	var net := NetInput.new(link, 0, func(_t: int) -> int: return 0)
+	net.capture(0)
+	link.wire.clear()
+	for i in 5:
+		net.pump()
+	assert_eq(link.wire, [] as Array[int], "a healthy link must not breed traffic")

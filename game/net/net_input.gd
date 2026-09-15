@@ -88,6 +88,9 @@ var _report := Tally.new()
 ## the same packet would go out again and again: waiting would breed traffic, and
 ## traffic would breed more waiting.
 var _sent_through := -1
+## Whether the link was up at the last pump: coming back is what sends our recent
+## input again.
+var _was_linked := true
 
 ## The last report in a form the game's font can draw: digits and capital Latin
 ## letters only, nothing else is in the atlas. It exists so the numbers can be
@@ -168,6 +171,25 @@ static func starting_delay(link: Link, carried := 0) -> int:
 
 func pump() -> void:
 	_link.poll()
+	var linked := _link.linked()
+	if linked and not _was_linked:
+		_send_again()
+	_was_linked = linked
+
+## The link is back after a drop. While it was down the game went on for a while
+## on what the partner had already sent, and our input for those ticks went
+## nowhere: the relay journals only what reached it, and what it replays to a
+## returning side is the partner's stream, never their own. Nor is a packet
+## handed to a socket that was already dying any safer. So our recent input goes
+## out again, and the partner, who ignores what it already has, takes what it
+## lacks.
+##
+## From a whole delay back rather than from our last tick: the partner needed our
+## input to compute each tick, and theirs for our tick arrived when they were a
+## delay behind it. They may be that far back and still need it.
+func _send_again() -> void:
+	for tick in range(maxi(Lockstep.DELAY, _last_tick - MAX_DELAY), _sent_through + 1):
+		_link.send(Protocol.pack_input(tick, _lockstep.local_input(tick)))
 
 ## Push out what was captured this frame. `WebSocketPeer.send()` only queues a
 ## packet; `poll()` is what writes the queue. Without this a press would sit

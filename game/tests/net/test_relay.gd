@@ -270,6 +270,57 @@ func _sim() -> GameSim:
 	return GameSim.new(Golden.level(), Golden.SEED, SimConfig.new(),
 		Golden.LEVEL_NUMBER, 2)
 
+## The same match with a drop in the middle of it. While the guest is away the
+## game goes on as far as the input already sent allows, and the guest's presses
+## for those ticks go nowhere — the relay journals only what reached it, and
+## replays the partner's stream to whoever returns, never their own. Unless the
+## returning side sends them again, the partner waits for them forever.
+func test_play_goes_on_after_a_drop_mid_game() -> void:
+	if _skip_without_binary():
+		return
+	assert_true(_start_server(11), "the server did not start")
+	var host_link := Relay.new()
+	var guest_link := Relay.new()
+	assert_true(_pair(host_link, guest_link), "the pair did not come together")
+
+	var frames := Golden.frames()
+	var inputs: Array[NetInput] = [
+		NetInput.new(host_link, host_link.slot, func(t: int) -> int: return frames[t][0]),
+		NetInput.new(guest_link, guest_link.slot, func(t: int) -> int: return frames[t][1]),
+	]
+	var sims: Array[GameSim] = [_sim(), _sim()]
+	var next: Array[int] = [0, 0]
+	var hashes: Array = [[], []]
+	var dropped_at := -1
+	for i in SPIN_LIMIT * 4:
+		for side in 2:
+			var input := inputs[side]
+			input.pump()
+			var t := next[side]
+			if t < PLAY_TICKS:
+				input.capture(t)
+				if input.can_advance(t):
+					sims[side].tick(input.inputs_for(t))
+					input.after_tick(t, sims[side].state_hash())
+					hashes[side].append(sims[side].state_hash())
+					next[side] = t + 1
+			input.flush()
+		if dropped_at < 0 and next[1] >= 60:
+			# A lift, a sleeping laptop: the socket dies with nobody asking.
+			guest_link._socket.close()
+			dropped_at = next[1]
+		if next[0] >= PLAY_TICKS and next[1] >= PLAY_TICKS:
+			break
+		OS.delay_msec(2)
+
+	assert_gt(dropped_at, 0, "the drop never happened")
+	assert_eq(guest_link.state, Relay.State.READY, "the guest never came back")
+	assert_eq(next, [PLAY_TICKS, PLAY_TICKS] as Array[int],
+		"the match froze after the drop: host at %d, guest at %d" % [next[0], next[1]])
+	assert_eq(hashes[0], hashes[1], "the worlds diverged")
+	host_link.close()
+	guest_link.close()
+
 ## Two people press one button and end up in the same game without exchanging
 ## anything: no code, no address.
 func test_quick_game_brings_two_strangers_together() -> void:
