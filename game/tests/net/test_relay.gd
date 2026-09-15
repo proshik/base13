@@ -64,6 +64,23 @@ func _skip_without_binary() -> bool:
 	pending("the server is not built: .build/relay is missing (Go required)")
 	return true
 
+## Unlike the tests around it, these two need no server at all: _open stores
+## the greeting before it ever touches the socket, so the hello can be checked
+## straight off a freshly built Relay.
+func test_hello_carries_platform_and_version() -> void:
+	var relay := Relay.new(Callable(), {"platform": "linux", "version": "1.2.3"})
+	relay.create("ws://127.0.0.1:1/ws", 42)
+	assert_eq(relay._greeting["platform"], "linux")
+	assert_eq(relay._greeting["version"], "1.2.3")
+	relay.close()
+
+func test_client_fields_cannot_override_the_action() -> void:
+	var merged := Relay.with_client({"action": "create", "game": Relay.GAME, "seed": 1},
+		{"action": "evil", "platform": "linux"})
+	assert_eq(merged["action"], "create",
+		"a client-supplied field must never win over what the hello itself says")
+	assert_eq(merged["platform"], "linux", "fields the hello does not name still pass through")
+
 func _spin(clients: Array, check: Callable) -> bool:
 	for i in SPIN_LIMIT:
 		for client in clients:

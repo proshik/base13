@@ -54,11 +54,15 @@ var _resuming := false
 var _now: Callable
 var _retry_at := 0
 var _give_up_at := 0
+var _client := {}
 
 ## now_provider is a seam for tests: otherwise the retry deadlines would have to
-## be waited out for real.
-func _init(now_provider := Callable()) -> void:
+## be waited out for real. client is the same kind of seam for what the hello
+## says about this machine; production code never passes one, and ClientInfo
+## reads the real OS and project version instead.
+func _init(now_provider := Callable(), client := {}) -> void:
 	_now = now_provider
+	_client = client if not client.is_empty() else ClientInfo.fields()
 
 func create(url: String, new_seed: int) -> Error:
 	seed_value = new_seed
@@ -77,9 +81,18 @@ func quick(url: String, new_seed: int) -> Error:
 	code = ""
 	return _open(url, {"action": "quick", "game": GAME, "seed": new_seed})
 
+## Layers what the hello itself says over what the client says about itself,
+## so the fixed part of a request — action, game, code, seed, since — can never
+## be shadowed by a platform or version string.
+static func with_client(greeting: Dictionary, client: Dictionary) -> Dictionary:
+	var merged := client.duplicate()
+	for key in greeting:
+		merged[key] = greeting[key]
+	return merged
+
 func _open(url: String, greeting: Dictionary) -> Error:
 	_url = url
-	_greeting = greeting
+	_greeting = with_client(greeting, _client)
 	_socket = WebSocketPeer.new()
 	_socket.heartbeat_interval = HEARTBEAT_SECONDS
 	var err := _socket.connect_to_url(url)

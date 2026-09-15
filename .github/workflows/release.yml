@@ -123,6 +123,9 @@ jobs:
         run: |
           export GODOT="$PWD/godot-bin/Godot_v${GODOT_VERSION}_linux.x86_64"
           "$GODOT" --headless --path game --import --quit || true
+          # Stamped from the environment, never the raw workflow_dispatch
+          # expression: VERSION was already checked above to look like N.N.N.
+          ./tools/stamp_version.sh "$VERSION"
           if [ "${{ inputs.target }}" = "server" ]; then
             ./tools/build.sh Web
           else
