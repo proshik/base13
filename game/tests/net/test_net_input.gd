@@ -174,3 +174,17 @@ func test_a_link_that_stays_up_sends_nothing_again() -> void:
 	for i in 5:
 		net.pump()
 	assert_eq(link.wire, [] as Array[int], "a healthy link must not breed traffic")
+
+## A level can be built while the relay is still greeting after a drop: the band
+## carrying the delay goes nowhere, and the welcome comes in with the very first
+## pump. Taken for a link that had been up all along, it never went out again, and
+## the partner stood at tick five for good.
+func test_a_band_sent_before_the_link_was_up_goes_out_when_it_is() -> void:
+	var link := Flaky.new()
+	link.up = false
+	var net := NetInput.new(link, 0, func(_t: int) -> int: return 0, 10)
+	assert_eq(link.wire, [] as Array[int], "the band was meant to be lost")
+	link.up = true
+	net.pump()
+	for tick in range(Lockstep.DELAY, 11):
+		assert_true(link.wire.has(tick), "tick %d of the band never went out" % tick)

@@ -303,7 +303,16 @@ Rakes we have already stepped on:
   forever.** The relay journals only what reached it and replays to a returning side the
   partner's stream, never its own. `NetInput` sends its recent input again when the link
   comes back — from a whole delay back, not from its last tick: the partner may hold a
-  larger delay and still need input for ticks we have already computed.
+  larger delay and still need input for ticks we have already computed. And whether
+  the link was up is read from the link when the input is built, not assumed: a level
+  built while the relay was still greeting lost its band, and the welcome arriving with
+  the first pump looked like a link that had never been down.
+- **A link can lose input without going down.** The partner still finishing the last
+  level — a tab hidden at the level clear — takes our new level's first input into
+  their old `NetInput`; the packets are gone from the socket, and their new level waits
+  for tick five for good. So a tick standing a second on a live link sends our recent
+  input again, once a second. Duplicates are ignored, and a few dozen packets a second
+  of standing is not waiting breeding traffic.
 - **"It lags" without numbers is unverifiable.** Every five seconds `NetInput` prints a
   `[net]` line: real time for three hundred ticks, the speed against the clock, how many
   ticks waited and the longest wait, the partner's slack and the current delay; growth

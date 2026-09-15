@@ -56,6 +56,9 @@ const SPARE := 2
 ## the delay to the ceiling. A network spike this long is rare enough to ignore
 ## too.
 const FROZEN_MS := 150
+## How long a tick may stand on a live link before our recent input goes out
+## again, and how often after that. See `_send_again`.
+const RESEND_MS := 1000
 
 ## How far ahead of our last computed tick the partner's input may be. An honest
 ## partner is never further than both input delays together: they cannot compute
@@ -79,6 +82,7 @@ var _stall_run := 0
 ## wait is six frames, and the frame rate must not decide the delay.
 var _waiting_tick := -1
 var _wait_began := 0
+var _resent_at := 0
 ## The partner's input delay, as their own packets reveal it: see handle_packet.
 var _partner_delay := Lockstep.DELAY
 var _window := Tally.new()
@@ -90,7 +94,7 @@ var _report := Tally.new()
 var _sent_through := -1
 ## Whether the link was up at the last pump: coming back is what sends our recent
 ## input again.
-var _was_linked := true
+var _was_linked := false
 
 ## The last report in a form the game's font can draw: digits and capital Latin
 ## letters only, nothing else is in the atlas. It exists so the numbers can be
@@ -158,6 +162,11 @@ func _init(link: Link, local_index: int, bits_provider := Callable(),
 	_lockstep = Lockstep.new(local_index)
 	_bits_provider = bits_provider
 	_link.packet_received.connect(handle_packet)
+	# Taken from the link rather than assumed: a level can be built while the
+	# relay is still greeting after a drop, and the band below would go nowhere.
+	# The welcome then comes in with the first pump, and only a link seen down
+	# first counts as coming back.
+	_was_linked = _link.linked()
 	# Nobody presses anything before the first tick, the same as in the ticks
 	# both sides fill in.
 	_raise(input_delay, 0, 0)
@@ -187,6 +196,12 @@ func pump() -> void:
 ## From a whole delay back rather than from our last tick: the partner needed our
 ## input to compute each tick, and theirs for our tick arrived when they were a
 ## delay behind it. They may be that far back and still need it.
+##
+## The same goes out once a second while a tick stands on a live link, because a
+## link can lose input without ever going down: the partner, still finishing the
+## last level behind a hidden tab, takes our new level's first input into their
+## old one, and their new level waits for it for good. A few dozen six-byte
+## packets a second of standing is not waiting breeding traffic.
 func _send_again() -> void:
 	for tick in range(maxi(Lockstep.DELAY, _last_tick - MAX_DELAY), _sent_through + 1):
 		_link.send(Protocol.pack_input(tick, _lockstep.local_input(tick)))
@@ -268,6 +283,10 @@ func can_advance(tick: int) -> bool:
 	if tick != _waiting_tick:
 		_waiting_tick = tick
 		_wait_began = now
+	elif now - _wait_began >= RESEND_MS and now - _resent_at >= RESEND_MS \
+			and _link.linked():
+		_resent_at = now
+		_send_again()
 	return false
 
 ## A wait that ended. One shorter than a tick is no stutter at all: at 144 Hz the
