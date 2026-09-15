@@ -1,0 +1,225 @@
+# Alert rules for the room server.
+#
+# Evaluated by Prometheus (rule_files in scrape.yml) or by the ruler of Grafana
+# Mimir or Grafana Cloud. Not by Alloy: Alloy only collects and sends on, so with
+# relay.alloy these rules have to be loaded into the store as well.
+#
+# severity: page is something to look at now: the server is gone, full, slow, or
+# the game itself is broken. severity: info is worth reading the next morning.
+#
+# Rules over players' own reports say so: those figures are self-reported, and a
+# client can forge them within the bounds the server clamps them to.
+
+groups:
+  - name: relay-availability
+    rules:
+      - alert: RelayDown
+        expr: up{job="relay"} == 0
+        for: 2m
+        labels:
+          severity: page
+        annotations:
+          summary: "The room server on {{ $labels.instance }} does not answer scrapes"
+          description: >-
+            Prometheus has not reached the metrics port for two minutes. Check first that
+            the container is running (docker ps) and that /health answers on the public
+            port; if it does, the server is up and the scrape is wrong: METRICS_ADDR, the
+            published metrics port, or a token that no longer matches METRICS_TOKEN (the
+            Prometheus targets page shows a 401).
+
+      - alert: RelayRestarting
+        expr: changes(process_start_time_seconds{job="relay"}[30m]) > 2
+        for: 0m
+        labels:
+          severity: page
+        annotations:
+          summary: "The room server on {{ $labels.instance }} restarted {{ $value }} times in half an hour"
+          description: >-
+            Every restart ends every match: the journal lives in memory. Check first the
+            container's last lines (docker logs) for a refusal to start or a panic, then
+            docker inspect for OOMKilled, which means the memory limit is below what the
+            rooms need.
+
+  - name: relay-capacity
+    rules:
+      - alert: RelayRoomsNearLimit
+        # The limit is always set, but a zero would make every room an alert.
+        expr: >-
+          sum by (instance) (relay_rooms{job="relay"})
+            > 0.8 * max by (instance) (relay_rooms_limit{job="relay"} > 0)
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: "Rooms on {{ $labels.instance }} are above 80% of MAX_ROOMS"
+          description: >-
+            Past the limit newcomers see SERVER IS BUSY. Check first how many rooms are
+            empty on the dashboard's Now row: an empty room keeps its place for up to six
+            minutes. If the machine has memory to spare (a room at its caps is about 4 MB),
+            raise MAX_ROOMS and restart.
+
+      - alert: RelayConnectionsNearLimit
+        expr: >-
+          relay_connections{job="relay"}
+            > 0.8 * (relay_connections_limit{job="relay"} > 0)
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: "Connections on {{ $labels.instance }} are above 80% of their limit"
+          description: >-
+            The connection limit is two per room plus sixty-four. Connections near it with
+            rooms well below theirs are sockets that never seat anyone: check first the
+            refusals by reason (bad_hello) and the proxy's per-address limits.
+
+      - alert: RelayRefusingForLimits
+        expr: >-
+          sum by (instance, reason) (
+            increase(relay_refusals_total{job="relay",reason=~"rooms_limit|connections_limit"}[10m])
+          ) > 0
+        for: 0m
+        labels:
+          severity: page
+        annotations:
+          summary: "The room server on {{ $labels.instance }} is turning players away: {{ $labels.reason }}"
+          description: >-
+            Players were told SERVER IS BUSY in the last ten minutes. Check first which
+            limit it was (the reason label): rooms_limit is MAX_ROOMS; connections_limit
+            with rooms to spare is sockets that do not seat anyone.
+
+      - alert: RelayMemoryHigh
+        # Set the threshold to about 80% of the container's memory budget. The
+        # deployment plan budgets about 400 MB at MAX_ROOMS=50, hence 320 MB; with
+        # another MAX_ROOMS or a memory limit on the container, change the number.
+        expr: process_resident_memory_bytes{job="relay"} > 320e6
+        for: 10m
+        labels:
+          severity: page
+        annotations:
+          summary: "The room server on {{ $labels.instance }} holds {{ $value | humanize1024 }}B of memory"
+          description: >-
+            Memory past the budget ends in the container being killed, and every match
+            with it. Check first the journal bytes and rooms on the dashboard: journals
+            are the only thing that grows. Journals near the rooms' caps are expected; a
+            heap growing with rooms flat is not.
+
+  - name: relay-lag
+    rules:
+      - alert: RelayAddsLag
+        expr: >-
+          histogram_quantile(0.99,
+            sum by (instance, le) (rate(relay_forward_seconds_bucket{job="relay"}[5m]))
+          ) > 0.05
+        for: 10m
+        labels:
+          severity: page
+        annotations:
+          summary: "The room server on {{ $labels.instance }} holds packets back: p99 {{ $value | humanizeDuration }}"
+          description: >-
+            One packet in a hundred takes over 50 ms from being read to being in the
+            partner's socket. Check first the scheduler latency and CPU on the dashboard:
+            a starved process delays everything. If those are low, it is partners' sockets
+            that take their packets slowly; evictions follow. Right after an eviction a
+            burst of slow forwards is normal, which is why this waits ten minutes.
+
+      - alert: RelayStarvedOfCPU
+        expr: >-
+          histogram_quantile(0.99,
+            sum by (instance, le) (rate(go_sched_latencies_seconds_bucket{job="relay"}[5m]))
+          ) > 0.01
+        for: 10m
+        labels:
+          severity: page
+        annotations:
+          summary: "Goroutines on {{ $labels.instance }} wait over 10 ms to run: p99 {{ $value | humanizeDuration }}"
+          description: >-
+            The process is not getting the CPU it asks for, and every packet waits with it.
+            Check first the machine's load and whether the container has a CPU limit
+            (docker inspect, NanoCpus): a quota that is too tight throttles the process in
+            bursts that averages do not show.
+
+  - name: relay-players
+    rules:
+      - alert: RelayPlayersLag
+        # Self-reported: a client sends its pace, and a forger can bend this share.
+        # Only a pace that was running is reported; freezes show in the worst gap.
+        # At least 0.1 windows a second, so one player's bad evening is not an alert.
+        expr: >-
+          (
+            sum by (instance) (rate(relay_client_windows_total{job="relay",verdict!="smooth"}[5m]))
+              /
+            sum by (instance) (rate(relay_client_windows_total{job="relay"}[5m]))
+          ) > 0.2
+          and
+          sum by (instance) (rate(relay_client_windows_total{job="relay"}[5m])) >= 0.1
+        for: 15m
+        labels:
+          severity: info
+        annotations:
+          summary: "Over 20% of players' windows on {{ $labels.instance }} ran below 95% of full speed"
+          description: >-
+            Players report their games running slow. Check first the verdict shares on the
+            dashboard: network means their games waited for the partner's input (look at RTT
+            and worst gap by platform); machine means they never waited and the device could
+            not keep up (look at FPS by platform). If the server's forward delay is up too,
+            the server is the cause.
+
+      - alert: RelayDesync
+        expr: sum by (instance, kind) (increase(relay_desynced_matches_total{job="relay"}[1h])) > 0
+        for: 0m
+        labels:
+          severity: page
+        annotations:
+          summary: "A match on {{ $labels.instance }} desynced ({{ $labels.kind }} room)"
+          description: >-
+            Two players' worlds parted: a bug in the game, not in the network. The core is
+            meant to compute the same world everywhere. Check first the players by version
+            and by platform on the dashboard: two versions in one match, or a platform that
+            computes differently (the ?selftest hash), are the usual causes. Self-reported,
+            but counted only once a room and only in a room that paired.
+
+      - alert: RelayMalformedReports
+        expr: >-
+          sum by (instance) (
+            increase(relay_client_reports_rejected_total{job="relay",why="malformed"}[1h])
+          ) > 0
+        for: 0m
+        labels:
+          severity: info
+        annotations:
+          summary: "Players' reports on {{ $labels.instance }} arrive in a shape the server does not take"
+          description: >-
+            A client version writes its reports differently from what the server reads, or a
+            script is sending text. Check first the players by version: a new release that
+            changed the report's shape shows up at once. Early rejections are left out on
+            purpose: an honest client catching up can report sooner than allowed.
+
+      - alert: RelayEvictions
+        expr: sum by (instance) (increase(relay_members_evicted_total{job="relay"}[15m])) > 0
+        for: 0m
+        labels:
+          severity: info
+        annotations:
+          summary: "The room server on {{ $labels.instance }} dropped players who fell behind"
+          description: >-
+            A player's queue overflowed: their link took packets slower than the partner
+            sent them. One now and then is a player on a bad link. Many at once, or with the
+            forward delay up, point at the server or the proxy buffering: check the proxy's
+            proxy_buffering first.
+
+  - name: relay-web
+    rules:
+      - alert: RelayEngineServedUncompressed
+        expr: >-
+          sum by (instance) (
+            increase(relay_http_responses_total{job="relay",route="wasm",class="2xx",encoding="identity"}[1h])
+          ) > 0
+        for: 0m
+        labels:
+          severity: info
+        annotations:
+          summary: "The engine on {{ $labels.instance }} went out uncompressed"
+          description: >-
+            A player downloaded forty megabytes instead of ten. Every browser asks for gzip,
+            so this is a proxy that dropped Accept-Encoding on the way (check its
+            configuration first), or a client that does not ask, such as curl.

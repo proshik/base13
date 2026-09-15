@@ -1,0 +1,42 @@
+# Prometheus scraping the room server on the same machine.
+#
+# The server exposes its figures only when METRICS_ADDR is set, on a port of its
+# own that the proxy in front never forwards: the README's "Metrics" section says
+# how to run it. This file is a whole configuration, so it can be checked as it is
+# (promtool check config scrape.yml); to add the job to a Prometheus that already
+# runs, copy the scrape_configs entry and the rule_files line.
+#
+# The job must stay named relay: every rule in alerts.yml and every panel of the
+# dashboard selects job="relay".
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 30s
+
+rule_files:
+  - alerts.yml
+
+# No Alertmanager is configured here: point this at yours to have the rules
+# reach a person rather than only the Prometheus alerts page.
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets: ["127.0.0.1:9093"]
+
+scrape_configs:
+  - job_name: relay
+    scrape_timeout: 10s
+    metrics_path: /metrics
+    # The same METRICS_TOKEN the server was started with, alone in a file that only
+    # Prometheus can read. A file rather than the token in this configuration: the
+    # configuration gets copied around, and a file keeps the secret where it is.
+    # Delete the authorization block if the server runs without a token.
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/relay-metrics-token
+    static_configs:
+      # Prometheus running on the machine itself reaches the published loopback port.
+      # Prometheus in a container on a docker network shared with the server reaches
+      # it by the container's name instead, for example base13:27015, with nothing
+      # published at all.
+      - targets: ["127.0.0.1:27015"]

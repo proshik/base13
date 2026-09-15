@@ -20,7 +20,10 @@ if command -v go >/dev/null 2>&1; then
     echo "server/go.mod or go.sum is not tidy: run go mod tidy in server/ and commit both"
     exit 1
   }
-  (cd server && GOTOOLCHAIN=local go test -mod=readonly -timeout 90s ./...)
+  # -count=1: a cached result is reused unless a file inside server/ changed,
+  # and deploy_test.go reads ../deploy, which Go does not look at for that. A
+  # dashboard edited on its own would pass on the result from before the edit.
+  (cd server && GOTOOLCHAIN=local go test -mod=readonly -count=1 -timeout 90s ./...)
   # The client tests need the binary: they stand a real server up and talk to
   # it for real. Otherwise the client-server seam would go unchecked — each
   # side green, and together they do not work.

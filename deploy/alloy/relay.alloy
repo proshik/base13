@@ -1,0 +1,41 @@
+// Grafana Alloy scraping the room server on the same machine and sending the
+// figures on to a Prometheus-compatible store, such as Grafana Cloud.
+//
+// The same scrape as deploy/prometheus/scrape.yml. Alloy only collects: it does
+// not evaluate alert rules. Load deploy/prometheus/alerts.yml into whatever
+// stores the figures (the Grafana Cloud or Mimir ruler, for example through
+// mimirtool rules load), or run a Prometheus with it.
+//
+// Nothing secret is written here. Both tokens are read from files only Alloy
+// can read, and the store's address and user come from the environment:
+//   GRAFANA_CLOUD_PROMETHEUS_URL   the remote write endpoint, ending in /api/prom/push
+//   GRAFANA_CLOUD_PROMETHEUS_USER  the numeric user of that endpoint
+
+prometheus.scrape "relay" {
+	// Without it Alloy names the job after this component, prometheus.scrape.relay,
+	// and every rule and panel selects job="relay".
+	job_name        = "relay"
+	targets         = [{"__address__" = "127.0.0.1:27015"}]
+	metrics_path    = "/metrics"
+	scrape_interval = "15s"
+	scrape_timeout  = "10s"
+
+	// The server's METRICS_TOKEN. Delete the block if it runs without one.
+	authorization {
+		type             = "Bearer"
+		credentials_file = "/etc/alloy/relay-metrics-token"
+	}
+
+	forward_to = [prometheus.remote_write.store.receiver]
+}
+
+prometheus.remote_write "store" {
+	endpoint {
+		url = sys.env("GRAFANA_CLOUD_PROMETHEUS_URL")
+
+		basic_auth {
+			username      = sys.env("GRAFANA_CLOUD_PROMETHEUS_USER")
+			password_file = "/etc/alloy/grafana-cloud-token"
+		}
+	}
+}
