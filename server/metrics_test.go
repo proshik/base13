@@ -2,9 +2,14 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"maps"
 	"math"
+	"net/http"
+	"net/http/httptest"
 	"regexp"
 	"runtime"
 	"slices"
@@ -749,5 +754,355 @@ func TestHistogramCountMatchesBucketsUnderConcurrentObservations(t *testing.T) {
 	wantSum := strconv.FormatFloat(float64(sum)/1e9, 'f', -1, 64)
 	if got, _ := seriesValue(text, "relay_example_race_seconds_sum"); got != wantSum {
 		t.Errorf("_sum is %s, expected %s", got, wantSum)
+	}
+}
+
+// Every platform label the server may render, in the order it renders them.
+var testPlatforms = []string{
+	"web", "web_android", "web_ios", "macos", "windows", "linux", "android", "ios", "unknown", "other",
+}
+
+func TestPlatformAndVersionLabelsAreClosed(t *testing.T) {
+	// Both come from the client's hello, as the client typed them. A label
+	// value is a series, so a stranger who could pick the values could grow the
+	// render without bound; whatever is sent, only a closed set comes out.
+	for _, c := range []struct{ sent, want string }{
+		{"web", "web"},
+		{"web_android", "web_android"},
+		{"web_ios", "web_ios"},
+		{"macos", "macos"},
+		{"windows", "windows"},
+		{"linux", "linux"},
+		{"android", "android"},
+		{"ios", "ios"},
+		{"", "unknown"},
+		{"unknown", "unknown"},
+		{"other", "other"},
+		{"Macos", "other"},
+		{"UNKNOWN", "other"},
+		{"macos ", "other"},
+		{" web", "other"},
+		{"web\n", "other"},
+		{"playstation", "other"},
+		{`ios"} 1`, "other"},
+	} {
+		got := platformLabel(c.sent)
+		if got != c.want {
+			t.Errorf("platform sent as %q is labelled %q, expected %q", c.sent, got, c.want)
+		}
+		if !slices.Contains(testPlatforms, got) {
+			t.Errorf("platform sent as %q is labelled %q, outside the closed set", c.sent, got)
+		}
+		// A member keeps only the label, and the label goes through the same
+		// function again when it is counted: labelling a label changes nothing.
+		if again := platformLabel(got); again != got {
+			t.Errorf("platform label %q labelled again became %q", got, again)
+		}
+	}
+
+	for _, c := range []struct{ sent, want string }{
+		{"0.5.0", "0.5.0"},
+		{"0.0.0", "0.0.0"},
+		{"123.45.6", "123.45.6"},
+		{"", "unknown"},
+		{"unknown", "unknown"},
+		{"other", "other"},
+		{"Unknown", "other"},
+		{"dev", "other"},
+		{"v0.5.0", "other"},
+		{"0.5", "other"},
+		{"0.5.0.1", "other"},
+		{"0.5.0-rc1", "other"},
+		{"1234.0.0", "other"},
+		{"0.5.0\n", "other"},
+		{" 0.5.0", "other"},
+		{`0.5.0"} 1`, "other"},
+		// Digits of another script are digits to Unicode but not to a label.
+		{"١.٢.٣", "other"},
+	} {
+		got := versionLabel(c.sent)
+		if got != c.want {
+			t.Errorf("version sent as %q is labelled %q, expected %q", c.sent, got, c.want)
+		}
+		if !expositionLabelValue.MatchString(got) {
+			t.Errorf("version sent as %q is labelled %q, which no label may carry", c.sent, got)
+		}
+		if again := versionLabel(got); again != got {
+			t.Errorf("version label %q labelled again became %q", got, again)
+		}
+	}
+
+	// And what a seated member keeps is the label, never what was sent: the
+	// strings end with the hello.
+	s := &server{hub: NewHub()}
+	for _, c := range []struct {
+		platform, version string
+		want              client
+	}{
+		{"ios", "0.5.0", client{platform: "ios", version: "0.5.0"}},
+		{"PlayStation 5", "v0.5.0 beta", client{platform: "other", version: "other"}},
+		{"", "", client{platform: "unknown", version: "unknown"}},
+	} {
+		far, conn := pipeConn(t)
+		body, _ := json.Marshal(hello{Action: "create", Game: "tanks", Platform: c.platform, Version: c.version})
+		go func() {
+			far.Write(clientFrame(opBinary, body))
+			io.Copy(io.Discard, far)
+		}()
+		_, member, err := s.greet(conn, httptest.NewRequest(http.MethodGet, "/ws", nil))
+		far.Close()
+		if err != nil {
+			t.Fatalf("a hello naming %q and %q was not seated: %v", c.platform, c.version, err)
+		}
+		if member.client != c.want {
+			t.Errorf("a hello naming %q and %q left the member with %+v, expected %+v",
+				c.platform, c.version, member.client, c.want)
+		}
+	}
+}
+
+// familySamples returns every sample of one family in a render, by the value
+// of the one label it is split by, keeping the order they were rendered in.
+func familySamples(t *testing.T, text, family, labelName string) ([]string, map[string]float64) {
+	t.Helper()
+	var order []string
+	values := map[string]float64{}
+	for _, line := range strings.Split(text, "\n") {
+		if !strings.HasPrefix(line, family+"{") {
+			continue
+		}
+		sample, err := parseSample(line)
+		if err != nil || len(sample.labels) != 1 || sample.labels[0].name != labelName {
+			t.Fatalf("an unexpected sample of %s: %q (%v)", family, line, err)
+		}
+		order = append(order, sample.labels[0].value)
+		values[sample.labels[0].value] = sample.value
+	}
+	return order, values
+}
+
+func TestLiveVersionsAreFoldedPastTen(t *testing.T) {
+	// Versions are not a closed set: every release is a new one. Kept in a
+	// table as they arrive, a script sending made-up versions could fill it;
+	// counted at the scrape from whoever is seated right now, the ten most
+	// common get a series each and everything past them is other.
+	s := &server{hub: NewHub()}
+	type seat struct {
+		room   *Room
+		member *Member
+	}
+	var seats []seat
+	sit := func(c client, times int) {
+		t.Helper()
+		for range times {
+			room, member, err := s.hub.QuickAs("tanks", 1, c)
+			if err != nil {
+				t.Fatalf("a player was not seated: %v", err)
+			}
+			seats = append(seats, seat{room, member})
+		}
+	}
+	sit(client{platform: "web", version: "2.0.0"}, 4)
+	sit(client{platform: "macos", version: "1.9.0"}, 3)
+	sit(client{platform: "web", version: "1.8.0"}, 2)
+	// Nine versions tied at one player each, broken by the version as a string:
+	// 1.0.10 comes before 1.0.2, and 1.0.7 and 1.0.8 are the two left over.
+	for _, v := range []string{"1.0.8", "1.0.7", "1.0.6", "1.0.5", "1.0.4", "1.0.3", "1.0.2", "1.0.10", "1.0.1"} {
+		sit(client{platform: "ios", version: v}, 1)
+	}
+	sit(client{platform: "linux", version: versionLabel("dev")}, 1)
+	sit(client{platform: "web", version: "unknown"}, 1)
+	sit(client{}, 1)
+
+	text := renderMetrics(s)
+	checkExposition(t, text)
+	order, got := familySamples(t, text, "relay_players_by_version", "version")
+	want := map[string]float64{
+		"2.0.0": 4, "1.9.0": 3, "1.8.0": 2,
+		"1.0.1": 1, "1.0.10": 1, "1.0.2": 1, "1.0.3": 1, "1.0.4": 1, "1.0.5": 1, "1.0.6": 1,
+		// 1.0.7 and 1.0.8 past the tenth, and the member whose version was not one.
+		"other":   3,
+		"unknown": 2,
+	}
+	if !maps.Equal(got, want) {
+		t.Errorf("live versions rendered as %v, expected %v", got, want)
+	}
+	wantOrder := []string{"2.0.0", "1.9.0", "1.8.0", "1.0.1", "1.0.10", "1.0.2", "1.0.3", "1.0.4", "1.0.5", "1.0.6", "other", "unknown"}
+	if !slices.Equal(order, wantOrder) {
+		t.Errorf("live versions rendered in the order %v, expected %v", order, wantOrder)
+	}
+	// The hub's rooms are a map, walked in a different order every time; the
+	// render must not follow it.
+	for range 20 {
+		again, _ := familySamples(t, renderMetrics(s), "relay_players_by_version", "version")
+		if !slices.Equal(again, order) {
+			t.Fatalf("a second render of the same players came out in the order %v, then %v", order, again)
+		}
+	}
+	if players := metricValue(t, s, `relay_players{platform="ios"}`); players != 9 {
+		t.Errorf("relay_players{platform=\"ios\"} is %v, expected 9", players)
+	}
+
+	// Nothing is kept between scrapes: a version whose players left is gone,
+	// and unknown and other stay, at zero.
+	for _, seat := range seats {
+		seat.room.Leave(seat.member)
+	}
+	order, got = familySamples(t, renderMetrics(s), "relay_players_by_version", "version")
+	if want := map[string]float64{"other": 0, "unknown": 0}; !maps.Equal(got, want) || len(order) != 2 {
+		t.Errorf("with nobody seated, live versions rendered as %v (%v), expected %v", got, order, want)
+	}
+	sit(client{platform: "web", version: "0.5.0"}, 1)
+	_, got = familySamples(t, renderMetrics(s), "relay_players_by_version", "version")
+	if want := map[string]float64{"0.5.0": 1, "other": 0, "unknown": 0}; !maps.Equal(got, want) {
+		t.Errorf("one player seated after everyone left rendered as %v, expected %v", got, want)
+	}
+}
+
+func TestScrapingWhilePlayersComeAndGo(t *testing.T) {
+	// A scrape copies the list of rooms under the hub's lock, lets go of it, and
+	// then reads each room's members under that room's lock alone. What a member
+	// said about itself must therefore be written before the member is in the
+	// room: written after, even under the hub's lock, it is read unguarded by a
+	// scrape that took its list a moment earlier. A scraper that follows one room
+	// at a time stands in for that moment, and every way a player sits down —
+	// matchmaking, a hello, a plain join — is walked past it again and again: a
+	// late write is a few instructions wide, and the race detector only sees the
+	// time it lands between two of the scraper's reads.
+	s := &server{hub: NewHub()}
+	var watched atomic.Pointer[Room]
+	var stop atomic.Bool
+	scraped := make(chan struct{})
+	go func() {
+		defer close(scraped)
+		for !stop.Load() {
+			if room := watched.Load(); room != nil {
+				livePlayers([]*Room{room})
+			}
+		}
+	}()
+	request := httptest.NewRequest(http.MethodGet, "/ws", nil)
+	for i := range 300 {
+		waiting, waiter, err := s.hub.QuickAs("tanks", uint32(i), client{platform: "web", version: "0.5.0"})
+		if err != nil {
+			t.Fatalf("no waiting room: %v", err)
+		}
+		watched.Store(waiting)
+
+		_, partner, err := s.hub.QuickAs("tanks", uint32(i), client{platform: "ios", version: "0.4.0"})
+		if err != nil || partner.Slot != 1 {
+			t.Fatalf("matchmaking did not seat the partner with the waiter: %v", err)
+		}
+		waiting.Leave(partner)
+
+		// A hello has the narrowest window of the three — greet locks the room
+		// again straight after seating — so it is walked past more often.
+		body, _ := json.Marshal(hello{Action: "join", Game: "tanks", Code: waiting.Code, Platform: "android", Version: "0.4.0"})
+		for range 4 {
+			far, conn := pipeConn(t)
+			go func() {
+				far.Write(clientFrame(opBinary, body))
+				io.Copy(io.Discard, far)
+			}()
+			_, greeted, err := s.greet(conn, request)
+			if err != nil {
+				t.Fatalf("the hello was not seated: %v", err)
+			}
+			waiting.Leave(greeted)
+			far.Close()
+		}
+
+		member, err := waiting.JoinAs(client{platform: "linux", version: "0.3.0"})
+		if err != nil {
+			t.Fatalf("not seated: %v", err)
+		}
+		waiting.Leave(member)
+		waiting.Leave(waiter)
+		s.hub.Sweep(time.Now().Add(emptyRoomLifetime + time.Minute))
+	}
+	stop.Store(true)
+	<-scraped
+
+	// And whole scrapes, while players meet, leave and have their rooms swept,
+	// stay well formed.
+	stop.Store(false)
+	var wg sync.WaitGroup
+	for w := range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			c := client{platform: testPlatforms[w], version: "0." + strconv.Itoa(w) + ".0"}
+			for !stop.Load() {
+				if room, member, err := s.hub.QuickAs("tanks", uint32(w), c); err == nil {
+					room.Leave(member)
+				}
+				s.hub.Sweep(time.Now().Add(emptyRoomLifetime + time.Minute))
+			}
+		}()
+	}
+	for range 200 {
+		if problems := expositionProblems(renderMetrics(s)); len(problems) > 0 {
+			stop.Store(true)
+			wg.Wait()
+			t.Fatalf("a render while players came and went: %s", strings.Join(problems, "; "))
+		}
+	}
+	stop.Store(true)
+	wg.Wait()
+}
+
+func TestExpositionNeverCarriesCodesOrSeeds(t *testing.T) {
+	// A room's code is the way into it, and the seed and the game name belong to
+	// the players. None of them may leave the server through a scrape, not even
+	// on a machine where only the owner reads the metrics: dashboards get shared.
+	const seed = 3735928559
+	const game = "zqprivatematch"
+	s := &server{hub: NewHub()}
+	addr, stop := serve(t, s)
+	defer stop()
+
+	host := dial(t, addr)
+	host.sendJSON(t, hello{Action: "create", Game: game, Seed: seed, Platform: "web", Version: "0.5.0"})
+	code := host.welcome(t).Code
+	guest := dial(t, addr)
+	guest.sendJSON(t, hello{Action: "join", Game: game, Code: code, Platform: "macos", Version: "0.5.0"})
+	if answer := guest.welcome(t); !answer.OK {
+		t.Fatalf("the guest was refused: %+v", answer)
+	}
+	waiter := dial(t, addr)
+	waiter.sendJSON(t, hello{Action: "quick", Game: game, Seed: seed, Platform: "ios", Version: "0.4.0"})
+	quickCode := waiter.welcome(t).Code
+	eventually(t, func() bool {
+		return metricValue(t, s, `relay_seatings_total{action="quick",platform="ios"}`) == 1
+	})
+
+	text := renderMetrics(s)
+	checkExposition(t, text)
+	for _, secret := range []string{code, quickCode, game} {
+		if strings.Contains(text, secret) {
+			t.Errorf("%q, a room's code or its game, is in the render:\n%s", secret, text)
+		}
+	}
+	// The seed's digits may turn up by chance in a memory figure, so they are
+	// looked for only where a room's own number could have been put: in a label,
+	// or as a value.
+	digits := strconv.FormatUint(seed, 10)
+	lowered := []string{strings.ToLower(code), strings.ToLower(quickCode)}
+	for _, line := range strings.Split(strings.TrimSuffix(text, "\n"), "\n") {
+		if strings.HasPrefix(line, "#") {
+			continue
+		}
+		sample, err := parseSample(line)
+		if err != nil {
+			t.Fatalf("an unreadable line: %q (%v)", line, err)
+		}
+		if sample.value == seed {
+			t.Errorf("a series carries the seed as its value: %q", line)
+		}
+		for _, l := range sample.labels {
+			if strings.Contains(l.value, digits) || slices.Contains(lowered, l.value) {
+				t.Errorf("a label carries a room's seed or code: %q", line)
+			}
+		}
 	}
 }

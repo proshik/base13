@@ -49,6 +49,11 @@ type hello struct {
 	Code   string `json:"code"`
 	Seed   uint32 `json:"seed"`
 	Since  int    `json:"since"` // how many journal records the client already has
+	// Where the client plays from and which release it is, as the client wrote
+	// them. Older clients send neither. Folded into labels in greet and not
+	// kept past it.
+	Platform string `json:"platform"`
+	Version  string `json:"version"`
 }
 
 // The answer to the housekeeping packet. After it, silence: everything else
@@ -461,6 +466,9 @@ func (s *server) greet(conn *Conn, r *http.Request) (*Room, *Member, error) {
 		return nil, nil, errNoSuchRoom
 	}
 
+	// Labelled here, once: nothing past this point sees what the client wrote.
+	who := client{platform: platformLabel(request.Platform), version: versionLabel(request.Version)}
+
 	var room *Room
 	var member *Member
 	switch request.Action {
@@ -472,7 +480,7 @@ func (s *server) greet(conn *Conn, r *http.Request) (*Room, *Member, error) {
 		// Matchmaking seats the player itself: searching and seating cannot be
 		// separate, or two people pressing the button in the same instant find
 		// one room and one of them gets refused.
-		room, member, err = s.hub.Quick(request.Game, request.Seed)
+		room, member, err = s.hub.QuickAs(request.Game, request.Seed, who)
 	default:
 		s.refuse(conn, "bad_hello", "unknown action", "bad_hello")
 		return nil, nil, errNoSuchRoom
@@ -484,7 +492,7 @@ func (s *server) greet(conn *Conn, r *http.Request) (*Room, *Member, error) {
 	}
 
 	if member == nil {
-		member, err = room.Join()
+		member, err = room.JoinAs(who)
 		if err != nil {
 			// A room found by its code has only one way to turn a member away:
 			// both seats are taken.
@@ -532,6 +540,16 @@ func (s *server) greet(conn *Conn, r *http.Request) (*Room, *Member, error) {
 			return nil, nil, err
 		}
 	}
+
+	// Counted only now: a player whose welcome or catch-up never went out did
+	// not sit down to play. Coming back by code is a join to the room, but a
+	// return to whoever reads the count — a flaky link would otherwise pass for
+	// new players arriving.
+	action := request.Action
+	if action == "join" && request.Since > 0 {
+		action = "return"
+	}
+	s.hub.stats.seated(action, member.client.platform)
 	return room, member, nil
 }
 

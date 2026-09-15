@@ -106,7 +106,7 @@ func measure(t *testing.T, pairs int, duration time.Duration) {
 }
 
 // writer sends key presses at the tick rate, like a real client.
-func writer(c *client, stop <-chan struct{}, sent *atomic.Int64, wg *sync.WaitGroup) {
+func writer(c *wsClient, stop <-chan struct{}, sent *atomic.Int64, wg *sync.WaitGroup) {
 	defer wg.Done()
 	ticker := time.NewTicker(time.Second / tickHz)
 	defer ticker.Stop()
@@ -128,7 +128,7 @@ func writer(c *client, stop <-chan struct{}, sent *atomic.Int64, wg *sync.WaitGr
 
 // reader counts what arrived and what arrived later than reasonable: a
 // lockstep game stalls if a packet is more than a few ticks late.
-func reader(c *client, stop <-chan struct{}, received, late *atomic.Int64, wg *sync.WaitGroup) {
+func reader(c *wsClient, stop <-chan struct{}, received, late *atomic.Int64, wg *sync.WaitGroup) {
 	defer wg.Done()
 	budget := 100 * time.Millisecond
 	for {

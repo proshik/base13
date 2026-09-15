@@ -548,3 +548,48 @@ func TestSweptRoomsLeaveTheWaitingIndex(t *testing.T) {
 		t.Fatalf("a swept room stayed in the queue: %d", got)
 	}
 }
+
+func TestSeatedMembersCarryTheirClientAndTheHubsStats(t *testing.T) {
+	// A room and its members count into the hub they belong to, and a member
+	// carries what its hello said about it. Both are set before the room or the
+	// member can be seen by anyone else, or a scrape walking them would race the
+	// write.
+	hub := NewHub()
+	room, _ := hub.Create("tanks", 1)
+	if room.stats != &hub.stats {
+		t.Fatal("a room opened by the hub does not count into the hub")
+	}
+	member, err := room.JoinAs(client{platform: "ios", version: "0.5.0"})
+	if err != nil {
+		t.Fatalf("not seated: %v", err)
+	}
+	if member.client != (client{platform: "ios", version: "0.5.0"}) || member.stats != &hub.stats {
+		t.Fatalf("the member carries %+v and stats %p, expected ios 0.5.0 and %p",
+			member.client, member.stats, &hub.stats)
+	}
+	// The plain Join is a member that said nothing about itself.
+	plain, _ := room.Join()
+	if plain.client != (client{}) || plain.stats != &hub.stats {
+		t.Fatalf("a plain Join carries %+v and stats %p", plain.client, plain.stats)
+	}
+
+	waiting, waiter, _ := hub.QuickAs("tanks", 2, client{platform: "web", version: "0.4.0"})
+	matched, partner, _ := hub.QuickAs("tanks", 3, client{platform: "android", version: "0.5.0"})
+	if waiting != matched || waiting.stats != &hub.stats {
+		t.Fatal("the quick game did not seat both in one room of this hub")
+	}
+	if waiter.client.platform != "web" || partner.client.platform != "android" ||
+		waiter.stats != &hub.stats || partner.stats != &hub.stats {
+		t.Fatalf("quick members carry %+v and %+v", waiter.client, partner.client)
+	}
+	if _, plainQuick, _ := hub.Quick("tanks", 4); plainQuick.client != (client{}) {
+		t.Fatalf("a plain Quick carries %+v", plainQuick.client)
+	}
+
+	// A bare room belongs to no hub and counts nothing, and it seats all the same.
+	bare := newRoom("ABCDEF", "tanks", 1)
+	lone, err := bare.JoinAs(client{platform: "linux"})
+	if err != nil || bare.stats != nil || lone.stats != nil {
+		t.Fatalf("a bare room: err %v, stats %p and %p", err, bare.stats, lone.stats)
+	}
+}

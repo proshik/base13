@@ -75,6 +75,19 @@ type outgoing struct {
 type Member struct {
 	Slot int
 	Send chan outgoing
+	// Both are written before the member goes into the room's map and never
+	// after: a scrape reads them under the room's lock alone, and a write it
+	// could not see coming would race it.
+	client client
+	stats  *stats
+}
+
+// client is what a player's hello said about where they play from, already
+// folded into labels. The strings a client sent are never kept: a member
+// carries only what a scrape may render. The zero value is a client that said
+// nothing, which renders as unknown.
+type client struct {
+	platform, version string
 }
 
 // journal holds the room's records back to back in a single buffer.
@@ -137,6 +150,9 @@ type Room struct {
 	members map[int]*Member
 	journal journal
 	emptyAt time.Time
+	// The hub's counts, set before the room is in the hub's map; nil in a room
+	// built bare, which then counts nothing.
+	stats *stats
 }
 
 func newRoom(code, game string, seed uint32) *Room {
@@ -161,16 +177,21 @@ func (r *Room) available() bool {
 	return r.Public && len(r.members) > 0 && len(r.members) < roomCapacity
 }
 
-// Join seats a member in a free slot and returns it. The slot matters: the
-// order of players depends on it, and that order must match on both sides.
+// Join seats a member who said nothing about themselves.
 func (r *Room) Join() (*Member, error) {
+	return r.JoinAs(client{})
+}
+
+// JoinAs seats a member in a free slot and returns it. The slot matters: the
+// order of players depends on it, and that order must match on both sides.
+func (r *Room) JoinAs(c client) (*Member, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for slot := 0; slot < roomCapacity; slot++ {
 		if _, taken := r.members[slot]; taken {
 			continue
 		}
-		member := &Member{Slot: slot, Send: make(chan outgoing, 256)}
+		member := &Member{Slot: slot, Send: make(chan outgoing, 256), client: c, stats: r.stats}
 		r.members[slot] = member
 		r.emptyAt = time.Time{}
 		return member, nil
@@ -354,6 +375,7 @@ func (h *Hub) create(game string, seed uint32) (*Room, error) {
 			continue
 		}
 		room := newRoom(code, game, seed)
+		room.stats = &h.stats
 		h.rooms[code] = room
 		return room, nil
 	}
@@ -368,6 +390,11 @@ func (h *Hub) create(game string, seed uint32) (*Room, error) {
 // as "full" while a live partner sits there. Lock order is hub, then room —
 // the same as in sweeping, or it would deadlock.
 func (h *Hub) Quick(game string, seed uint32) (*Room, *Member, error) {
+	return h.QuickAs(game, seed, client{})
+}
+
+// QuickAs is Quick for a player whose hello said where they play from.
+func (h *Hub) QuickAs(game string, seed uint32, c client) (*Room, *Member, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -379,7 +406,7 @@ func (h *Hub) Quick(game string, seed uint32) (*Room, *Member, error) {
 			delete(h.waiting[game], code)
 			continue
 		}
-		member, err := room.Join()
+		member, err := room.JoinAs(c)
 		if err != nil {
 			// The seat was taken meanwhile — look further rather than refuse.
 			delete(h.waiting[game], code)
@@ -399,7 +426,7 @@ func (h *Hub) Quick(game string, seed uint32) (*Room, *Member, error) {
 		return nil, nil, err
 	}
 	room.Public = true
-	member, err := room.Join()
+	member, err := room.JoinAs(c)
 	if err != nil {
 		return nil, nil, err
 	}

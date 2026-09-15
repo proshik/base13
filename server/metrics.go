@@ -16,8 +16,10 @@ package main
 
 import (
 	"bufio"
+	"cmp"
 	"fmt"
 	"io"
+	"maps"
 	"regexp"
 	"runtime"
 	"slices"
@@ -75,6 +77,7 @@ type stats struct {
 	opened      atomic.Uint64
 	refusals    counterVec // over refusalLabels
 	disconnects counterVec // over disconnectLabels
+	seatings    counterVec // over seatingLabels
 }
 
 // Why a connection was refused. Both limits reach the client as the same
@@ -90,6 +93,53 @@ var refusalLabels = labelSet{{"reason", []string{
 var disconnectLabels = labelSet{{"cause", []string{
 	"goodbye", "idle", "lost", "cut", "protocol",
 }}}
+
+// Every platform a hello may name, and the two folds for the rest: a client
+// that names none is unknown, and anything else it names is other.
+var platforms = []string{
+	"web", "web_android", "web_ios", "macos", "windows", "linux", "android", "ios", "unknown", "other",
+}
+
+var platformLabels = labelSet{{"platform", platforms}}
+
+// How a player sat down: opening a room, joining one by its code, the quick
+// game, or coming back by code after a drop.
+var seatingLabels = labelSet{
+	{"action", []string{"create", "join", "quick", "return"}},
+	{"platform", platforms},
+}
+
+// How many versions get a series of their own among the players seated right
+// now. Past it they are other: releases pile up over the years, and a script
+// could make up as many as it likes.
+const maxVersionSeries = 10
+
+// platformLabel folds whatever a hello named as its platform into the closed
+// set. A label passed through it again comes back unchanged, so a member that
+// keeps only the label can be counted through it too.
+func platformLabel(sent string) string {
+	switch {
+	case sent == "":
+		return "unknown"
+	case slices.Contains(platforms, sent):
+		return sent
+	}
+	return "other"
+}
+
+// versionLabel folds whatever a hello named as its version: a release version
+// is kept, since the set of those is folded again at the scrape, none is
+// unknown, and anything else is other. Like platformLabel, it leaves a label
+// as it is.
+func versionLabel(sent string) string {
+	switch {
+	case sent == "":
+		return "unknown"
+	case sent == "unknown" || releaseVersion.MatchString(sent):
+		return sent
+	}
+	return "other"
+}
 
 // connectionOpened counts one WebSocket upgrade, whatever becomes of it after.
 func (s *stats) connectionOpened() {
@@ -116,18 +166,83 @@ func (s *stats) disconnected(cause string) {
 	s.disconnects.inc(disconnectLabels, cause)
 }
 
+// seated counts one player sitting down, under an action from seatingLabels
+// and the platform their hello named.
+func (s *stats) seated(action, platform string) {
+	if s == nil {
+		return
+	}
+	s.seatings.inc(seatingLabels, action, platformLabel(platform))
+}
+
+// livePlayers counts whoever is seated right now, by platform and by version
+// label. It takes each room's lock in turn and never the hub's: the caller
+// copies the rooms out from under that, so a scrape does not hold up everyone
+// sitting down for as long as it takes to walk every room.
+func livePlayers(rooms []*Room) (byPlatform []float64, byVersion map[string]int) {
+	byPlatform = make([]float64, platformLabels.size())
+	byVersion = map[string]int{}
+	for _, room := range rooms {
+		room.mu.Lock()
+		for _, member := range room.members {
+			if i := platformLabels.index(platformLabel(member.client.platform)); i >= 0 {
+				byPlatform[i]++
+			}
+			byVersion[versionLabel(member.client.version)]++
+		}
+		room.mu.Unlock()
+	}
+	return byPlatform, byVersion
+}
+
+// versionCount is one version's series among the live players.
+type versionCount struct {
+	version string
+	players int
+}
+
+// foldVersions picks the series a scrape renders for live versions: the most
+// common release versions, most players first and ties in string order so two
+// scrapes of the same players agree, at most maxVersionSeries of them; then
+// other, which takes every version past those as well as players already
+// labelled other; then unknown. Other and unknown are always there, at zero
+// too, so a panel over them never has a gap.
+func foldVersions(byVersion map[string]int) []versionCount {
+	ranked := make([]versionCount, 0, len(byVersion))
+	for version, players := range byVersion {
+		if version != "unknown" && version != "other" {
+			ranked = append(ranked, versionCount{version, players})
+		}
+	}
+	slices.SortFunc(ranked, func(a, b versionCount) int {
+		if a.players != b.players {
+			return cmp.Compare(b.players, a.players)
+		}
+		return strings.Compare(a.version, b.version)
+	})
+	other := byVersion["other"]
+	for _, past := range ranked[min(len(ranked), maxVersionSeries):] {
+		other += past.players
+	}
+	ranked = ranked[:min(len(ranked), maxVersionSeries)]
+	return append(ranked, versionCount{"other", other}, versionCount{"unknown", byVersion["unknown"]})
+}
+
 // writeMetrics renders the server's whole state. Families come in a fixed
 // order, so two scrapes of the same state are the same bytes.
 func (s *server) writeMetrics(w io.Writer) {
-	// Each lock is held only to copy a number, and never two at once: holding
-	// one while taking the other would be a new lock order for the whole server
-	// to keep.
+	// Each lock is held only to copy what it guards, and never two at once:
+	// holding one while taking the other would be a new lock order for the whole
+	// server to keep. The hub's gives up its list of rooms, and each room is then
+	// locked on its own.
 	s.mu.Lock()
 	connections := len(s.conns)
 	s.mu.Unlock()
 	s.hub.mu.Lock()
 	roomsLimit := s.hub.limit
+	rooms := slices.Collect(maps.Values(s.hub.rooms))
 	s.hub.mu.Unlock()
+	byPlatform, byVersion := livePlayers(rooms)
 
 	e := newExposition(w)
 	defer e.flush()
@@ -143,6 +258,17 @@ func (s *server) writeMetrics(w io.Writer) {
 	e.gauge("relay_connections", "Connections open right now, in a room or still saying hello.", float64(connections))
 	e.gauge("relay_connections_limit", "The most connections held at once; zero means no cap.", float64(s.maxConns))
 	e.gauge("relay_rooms_limit", "The most rooms held at once.", float64(roomsLimit))
+	e.family("relay_players", "gauge", "Players seated in a room right now, by the platform their hello named.")
+	for i := range platformLabels.size() {
+		e.sample("relay_players", platformLabels.labels(i), byPlatform[i])
+	}
+	e.family("relay_players_by_version", "gauge",
+		"Players seated in a room right now, by the version their hello named: the "+
+			strconv.Itoa(maxVersionSeries)+" most common, "+
+			"other for the rest and for anything that is not a release version, unknown for none.")
+	for _, v := range foldVersions(byVersion) {
+		e.sample("relay_players_by_version", []label{{"version", v.version}}, float64(v.players))
+	}
 
 	writeRuntimeMetrics(e)
 	writeProcessFamilies(e, procRoot)
@@ -158,6 +284,10 @@ func (s *server) writeMetrics(w io.Writer) {
 	e.counterVec("relay_disconnects_total",
 		"Connections of seated players that ended, by how they ended.",
 		disconnectLabels, &counted.disconnects)
+	e.counterVec("relay_seatings_total",
+		"Players seated in a room, by how they came in and the platform their hello named; "+
+			"return is coming back by code after a drop.",
+		seatingLabels, &counted.seatings)
 }
 
 // How much a single vector or histogram can hold. The storage is a fixed array

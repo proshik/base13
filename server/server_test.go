@@ -28,7 +28,9 @@ import (
 // A real connection to a real server: handshake, housekeeping packet,
 // relaying. The whole conversation is exercised, not pieces of it.
 
-type client struct {
+// wsClient is the test's own end of a socket. Not named client: that name
+// belongs to the server's record of what a player's hello said about them.
+type wsClient struct {
 	conn   net.Conn
 	reader *bufio.Reader
 }
@@ -41,7 +43,7 @@ type client struct {
 // returning guest seated in the host's slot, a waiter's room gone. The cleanup
 // holds the socket until the end, so every client lives exactly as long as its
 // test.
-func dial(t *testing.T, url string) *client {
+func dial(t *testing.T, url string) *wsClient {
 	t.Helper()
 	conn, err := net.Dial("tcp", url)
 	if err != nil {
@@ -67,24 +69,24 @@ func dial(t *testing.T, url string) *client {
 	if response.Header.Get("Sec-WebSocket-Accept") != acceptKey(key) {
 		t.Fatal("handshake acceptance did not match")
 	}
-	return &client{conn: conn, reader: reader}
+	return &wsClient{conn: conn, reader: reader}
 }
 
-func (c *client) send(t *testing.T, payload []byte) {
+func (c *wsClient) send(t *testing.T, payload []byte) {
 	t.Helper()
 	if _, err := c.conn.Write(clientFrame(opBinary, payload)); err != nil {
 		t.Fatalf("send failed: %v", err)
 	}
 }
 
-func (c *client) sendJSON(t *testing.T, value any) {
+func (c *wsClient) sendJSON(t *testing.T, value any) {
 	t.Helper()
 	body, _ := json.Marshal(value)
 	c.send(t, body)
 }
 
 // receive returns the next game packet, skipping housekeeping messages.
-func (c *client) receive(t *testing.T) []byte {
+func (c *wsClient) receive(t *testing.T) []byte {
 	t.Helper()
 	for {
 		opcode, payload := c.receiveFrame(t)
@@ -95,7 +97,7 @@ func (c *client) receive(t *testing.T) []byte {
 }
 
 // receiveText returns the next housekeeping message.
-func (c *client) receiveText(t *testing.T) []byte {
+func (c *wsClient) receiveText(t *testing.T) []byte {
 	t.Helper()
 	for {
 		opcode, payload := c.receiveFrame(t)
@@ -106,7 +108,7 @@ func (c *client) receiveText(t *testing.T) []byte {
 }
 
 // receiveFrame reads one frame from the server; the server does not mask.
-func (c *client) receiveFrame(t *testing.T) (byte, []byte) {
+func (c *wsClient) receiveFrame(t *testing.T) (byte, []byte) {
 	t.Helper()
 	c.conn.SetReadDeadline(time.Now().Add(3 * time.Second))
 	var head [2]byte
@@ -140,7 +142,7 @@ func (c *client) receiveFrame(t *testing.T) (byte, []byte) {
 	return opcode, payload
 }
 
-func (c *client) welcome(t *testing.T) welcome {
+func (c *wsClient) welcome(t *testing.T) welcome {
 	t.Helper()
 	var answer welcome
 	if err := json.Unmarshal(c.receiveText(t), &answer); err != nil {
@@ -649,7 +651,7 @@ func TestShutdownSaysGoodbyeToEveryone(t *testing.T) {
 
 	s.shutdown(httpServer, listener)
 
-	for i, c := range []*client{first, second} {
+	for i, c := range []*wsClient{first, second} {
 		// Before the farewell the player may have received occupancy notices —
 		// skip them and look for the close frame itself.
 		var payload []byte
@@ -1239,5 +1241,242 @@ func TestHowAConnectionEndedIsClassified(t *testing.T) {
 				t.Errorf("a read that ended with %v is counted as %q, expected %q", err, got, c.want)
 			}
 		})
+	}
+}
+
+func TestSeatingsAreCountedByActionAndPlatform(t *testing.T) {
+	// Who sits down to play, how, and from what. A seating is counted once the
+	// welcome has gone out, so a refused knock is not one, and coming back by
+	// code after a drop is told apart from joining for the first time.
+	s := &server{hub: NewHub()}
+	addr, stop := serve(t, s)
+	defer stop()
+
+	actions := []string{"create", "join", "quick", "return"}
+	seatings := func(action, platform string) string {
+		return `relay_seatings_total{action="` + action + `",platform="` + platform + `"}`
+	}
+	players := func(platform string) string {
+		return `relay_players{platform="` + platform + `"}`
+	}
+	// Every combination from the very first scrape, zeros included: a series
+	// that appears only when first counted breaks rate() across that moment.
+	first := renderMetrics(s)
+	checkExposition(t, first)
+	for _, platform := range testPlatforms {
+		for _, action := range actions {
+			if got, found := seriesValue(first, seatings(action, platform)); !found || got != "0" {
+				t.Errorf("before anyone sat down %s is %q (found %v)", seatings(action, platform), got, found)
+			}
+		}
+		if got, found := seriesValue(first, players(platform)); !found || got != "0" {
+			t.Errorf("before anyone sat down %s is %q (found %v)", players(platform), got, found)
+		}
+	}
+
+	counted := map[string]float64{}
+	live := map[string]float64{}
+	check := func(step string) {
+		t.Helper()
+		for _, platform := range testPlatforms {
+			for _, action := range actions {
+				series := seatings(action, platform)
+				if got := metricValue(t, s, series); got != counted[series] {
+					t.Errorf("after %s: %s is %v, expected %v", step, series, got, counted[series])
+				}
+			}
+			if got := metricValue(t, s, players(platform)); got != live[platform] {
+				t.Errorf("after %s: %s is %v, expected %v", step, players(platform), got, live[platform])
+			}
+		}
+	}
+	// seated waits for a seating counted on the server's own goroutine: the
+	// client may read its welcome before the count lands.
+	seated := func(action, platform string) {
+		t.Helper()
+		counted[seatings(action, platform)]++
+		want := counted[seatings(action, platform)]
+		eventually(t, func() bool { return metricValue(t, s, seatings(action, platform)) == want })
+	}
+
+	host := dial(t, addr)
+	host.sendJSON(t, hello{Action: "create", Game: "tanks", Seed: 5, Platform: "macos", Version: "0.5.0"})
+	code := host.welcome(t).Code
+	seated("create", "macos")
+	live["macos"] = 1
+	check("the host opened a room")
+
+	guest := dial(t, addr)
+	guest.sendJSON(t, hello{Action: "join", Game: "tanks", Code: code, Platform: "web_ios", Version: "0.5.0"})
+	if answer := guest.welcome(t); !answer.OK {
+		t.Fatalf("the guest was refused: %+v", answer)
+	}
+	seated("join", "web_ios")
+	live["web_ios"] = 1
+	check("the guest joined by code")
+	if got := metricValue(t, s, `relay_players_by_version{version="0.5.0"}`); got != 2 {
+		t.Errorf(`relay_players_by_version{version="0.5.0"} is %v, expected 2`, got)
+	}
+
+	// Knocks the server refused sit nobody down.
+	for _, knock := range []hello{
+		{Action: "join", Game: "tanks", Code: code, Platform: "linux"},
+		{Action: "join", Game: "tanks", Code: "ZZZZZZ", Platform: "windows"},
+	} {
+		c := dial(t, addr)
+		c.sendJSON(t, knock)
+		if answer := c.welcome(t); answer.OK {
+			t.Fatalf("a knock that should have been refused was let in: %+v", answer)
+		}
+		c.conn.Close()
+	}
+	check("a knock at a full room and one at a code nobody opened")
+
+	// The guest drops and comes back with part of the journal: a return, not a
+	// second join.
+	host.send(t, []byte{2, 0, 0, 0, 0, 0})
+	guest.receive(t)
+	guest.conn.Close()
+	eventually(t, func() bool { return metricValue(t, s, players("web_ios")) == 0 })
+	back := dial(t, addr)
+	back.sendJSON(t, hello{Action: "join", Game: "tanks", Code: code, Since: 1, Platform: "web_ios", Version: "0.5.0"})
+	if answer := back.welcome(t); !answer.OK {
+		t.Fatalf("the guest could not come back: %+v", answer)
+	}
+	seated("return", "web_ios")
+	check("the guest came back")
+
+	// Two strangers meet through the quick game; one names a platform the
+	// server does not know.
+	waiter := dial(t, addr)
+	waiter.sendJSON(t, hello{Action: "quick", Game: "tanks", Seed: 8, Platform: "android", Version: "0.5.0"})
+	waiter.welcome(t)
+	seated("quick", "android")
+	stranger := dial(t, addr)
+	stranger.sendJSON(t, hello{Action: "quick", Game: "tanks", Seed: 9, Platform: "PlayStation", Version: "0.5.0"})
+	stranger.welcome(t)
+	seated("quick", "other")
+	live["android"] = 1
+	live["other"] = 1
+	check("two strangers met through the quick game")
+
+	// Leaving takes a player out of the live count and leaves the seatings as
+	// they were: those are what happened, not who is here.
+	waiter.conn.Close()
+	stranger.conn.Close()
+	eventually(t, func() bool {
+		return metricValue(t, s, players("android")) == 0 && metricValue(t, s, players("other")) == 0
+	})
+	live["android"] = 0
+	live["other"] = 0
+	check("the strangers left")
+	checkExposition(t, renderMetrics(s))
+}
+
+func TestAnOldClientCountsAsUnknown(t *testing.T) {
+	// A client released before the hello named its platform and version sends
+	// neither. It still plays: counted as unknown, not refused and not dropped
+	// from the count.
+	s := &server{hub: NewHub()}
+	addr, stop := serve(t, s)
+	defer stop()
+
+	host := dial(t, addr)
+	host.send(t, []byte(`{"action":"create","game":"tanks","seed":7}`))
+	answer := host.welcome(t)
+	if !answer.OK {
+		t.Fatalf("an old client was refused: %+v", answer)
+	}
+	guest := dial(t, addr)
+	guest.send(t, []byte(`{"action":"join","game":"tanks","code":"`+answer.Code+`"}`))
+	if answer := guest.welcome(t); !answer.OK {
+		t.Fatalf("an old client could not join: %+v", answer)
+	}
+	eventually(t, func() bool {
+		return metricValue(t, s, `relay_seatings_total{action="join",platform="unknown"}`) == 1
+	})
+	for series, want := range map[string]float64{
+		`relay_seatings_total{action="create",platform="unknown"}`: 1,
+		`relay_seatings_total{action="join",platform="other"}`:     0,
+		`relay_players{platform="unknown"}`:                        2,
+		`relay_players{platform="other"}`:                          0,
+		`relay_players_by_version{version="unknown"}`:              2,
+		`relay_players_by_version{version="other"}`:                0,
+	} {
+		if got := metricValue(t, s, series); got != want {
+			t.Errorf("%s is %v, expected %v", series, got, want)
+		}
+	}
+	checkExposition(t, renderMetrics(s))
+
+	// Seated without a hello at all, the way a bare Join seats one, a member is
+	// unknown the same way.
+	room, err := s.hub.Create("tanks", 1)
+	if err != nil {
+		t.Fatalf("no room: %v", err)
+	}
+	if _, err := room.Join(); err != nil {
+		t.Fatalf("not seated: %v", err)
+	}
+	for series, want := range map[string]float64{
+		`relay_players{platform="unknown"}`:           3,
+		`relay_players_by_version{version="unknown"}`: 3,
+	} {
+		if got := metricValue(t, s, series); got != want {
+			t.Errorf("with a member seated by a bare Join, %s is %v, expected %v", series, got, want)
+		}
+	}
+}
+
+func TestASeatingIsCountedOnlyOnceTheWelcomeWentOut(t *testing.T) {
+	// A player whose welcome, or whose catch-up after it, could not be written
+	// is let go again at once: they never sat down to play, and counting them
+	// would turn a flaky link into players arriving.
+	s := &server{hub: NewHub()}
+	request := httptest.NewRequest(http.MethodGet, "/ws", nil)
+	room, err := s.hub.Create("tanks", 1)
+	if err != nil {
+		t.Fatalf("no room: %v", err)
+	}
+	host, _ := room.JoinAs(client{platform: "web"})
+	room.Broadcast(host, []byte{2, 0, 0, 0, 0, 0})
+	room.Broadcast(host, []byte{2, 1, 0, 0, 0, 0})
+	knock := func(platform string) []byte {
+		body, _ := json.Marshal(hello{Action: "join", Game: "tanks", Code: room.Code, Platform: platform})
+		return clientFrame(opBinary, body)
+	}
+
+	// Gone before the welcome: the pipe has nobody left to write to.
+	far, conn := pipeConn(t)
+	go func() {
+		far.Write(knock("ios"))
+		far.Close()
+	}()
+	if _, _, err := s.greet(conn, request); err == nil {
+		t.Fatal("a welcome to a closed pipe was written")
+	}
+
+	// Gone after the welcome, before the two records owed to it.
+	far, conn = pipeConn(t)
+	go func() {
+		far.Write(knock("android"))
+		far.Read(make([]byte, 1024))
+		far.Close()
+	}()
+	if _, _, err := s.greet(conn, request); err == nil {
+		t.Fatal("a catch-up to a closed pipe was written")
+	}
+
+	if got := room.Occupants(); got != 1 {
+		t.Errorf("%d in the room after two failed greetings, expected the host alone", got)
+	}
+	text := renderMetrics(s)
+	for _, action := range []string{"create", "join", "quick", "return"} {
+		for _, platform := range testPlatforms {
+			series := `relay_seatings_total{action="` + action + `",platform="` + platform + `"}`
+			if got, _ := seriesValue(text, series); got != "0" {
+				t.Errorf("%s is %s after two greetings that never went out", series, got)
+			}
+		}
 	}
 }
