@@ -465,7 +465,9 @@ func (s *server) writeMetrics(w io.Writer) {
 		counted.capped.Load())
 	e.histogramVec("relay_rtt_seconds",
 		"The round trip to a player, measured by the server's own pings as the player answers them, "+
-			"by the platform their hello named: the network between the two, observed about every twenty seconds per player.",
+			"by the platform their hello named: the network both ways, plus the time the player's side takes "+
+			"to answer (up to a frame on native builds) and the server's own wait to write the ping; "+
+			"observed about every twenty seconds per player.",
 		platformLabels, rttBuckets, &counted.rtt)
 	e.histogram("relay_packet_gap_worst_seconds",
 		"The longest a player's stream of packets went quiet in each window, observed once a window per player: "+

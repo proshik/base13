@@ -9,12 +9,14 @@ package main
 
 import (
 	"bufio"
+	cryptorand "crypto/rand"
 	"crypto/sha1"
 	"encoding/base64"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
+	mathrand "math/rand/v2"
 	"net"
 	"net/http"
 	"strings"
@@ -256,41 +258,62 @@ func (c *Conn) WriteText(data []byte) error {
 // browser cannot send one at all — its WebSocket has no such call — and a
 // waiting browser player would otherwise be silent in both directions.
 //
-// The ping carries the moment it left, eight bytes of a stamp. The standard
-// has every client echo a ping's payload in its pong, browsers and Godot
-// included, without the page or the game doing anything, so the answer
-// measures the network to the player for free. A stamp rather than the wall
-// clock: a clock stepped between the ping and the pong would turn into a round
-// trip that never happened.
+// The ping carries the moment it left, eight bytes of a stamp moved by
+// pingOffset. The standard has every client echo a ping's payload in its pong,
+// browsers and Godot included, without the page or the game doing anything, so
+// the answer measures the round trip to the player for free. A stamp rather
+// than the wall clock: a clock stepped between the ping and the pong would turn
+// into a round trip that never happened.
 func (c *Conn) Ping() error {
-	sent := stamp()
+	// Wrapping past the top of uint64 is defined, so the offset can be any
+	// value at all and still be taken back exactly.
+	sent := uint64(stamp()) + pingOffset
 	// Stored before the write: a pong can arrive as soon as the frame is on the
 	// wire, and it must find the moment it answers already there.
 	c.lastPing.Store(int64(sent))
 	var payload [8]byte
-	binary.BigEndian.PutUint64(payload[:], uint64(sent))
+	binary.BigEndian.PutUint64(payload[:], sent)
 	return c.writeFrame(opPing, payload[:])
+}
+
+// pingOffset moves every ping's stamp by the same amount for the life of the
+// process. A stamp is the time since the process started, and sent as it is,
+// every player could read when the server last restarted. Never logged and
+// never exported: known, it would give that away again.
+var pingOffset = drawPingOffset(cryptorand.Read)
+
+// drawPingOffset takes eight bytes from the random source. The source is a
+// parameter so a test can hand it bytes it knows, or one that fails. Since Go
+// 1.24 the system source does not return errors at all, so the fallback is for
+// a source that is not the system's: an offset of zero would hide nothing.
+func drawPingOffset(read func([]byte) (int, error)) uint64 {
+	var drawn [8]byte
+	if _, err := read(drawn[:]); err != nil {
+		return mathrand.Uint64()
+	}
+	return binary.BigEndian.Uint64(drawn[:])
 }
 
 // pong takes a pong as a round trip when it echoes the last ping exactly, and
 // only the first time. Anything else is left alone without a word: the
 // standard allows a pong nobody asked for, a pong to a ping since replaced is
-// merely late, and a payload made up to look like an earlier moment would
-// otherwise be believed. A client cannot answer a ping it has not received, so
-// once only the exact moment is taken, the round trip it reports can be made
-// longer by waiting but not made up.
+// merely late, and a payload made up to claim some other moment would
+// otherwise be believed. Taking only the exact value means a round trip can be
+// drawn out by answering late, but cannot be made up without guessing the
+// exact value the server wrote.
 func (c *Conn) pong(payload []byte) {
 	if len(payload) != 8 {
 		return
 	}
-	sent := int64(binary.BigEndian.Uint64(payload))
+	sent := binary.BigEndian.Uint64(payload)
 	// Zero is what the connection holds when no ping is waiting: matched, it
-	// would pass for a ping sent when the process started.
-	if sent == 0 || !c.lastPing.CompareAndSwap(sent, 0) {
+	// would pass for a real ping. A ping whose stamp and offset happen to add
+	// up to zero is then never measured, which costs one sample in 2^64.
+	if sent == 0 || !c.lastPing.CompareAndSwap(int64(sent), 0) {
 		return
 	}
 	if c.onRTT != nil {
-		c.onRTT(stamp() - time.Duration(sent))
+		c.onRTT(stamp() - time.Duration(sent-pingOffset))
 	}
 }
 

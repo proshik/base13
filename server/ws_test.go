@@ -253,14 +253,65 @@ func TestAPongBeforeThePingWriteReturnsIsCounted(t *testing.T) {
 		}()
 		_, survived = server.ReadMessage()
 	}}
-	if err := server.Ping(); err != nil {
-		t.Fatalf("the ping was not written: %v", err)
+	// The answer is read inside the write, so a reader that ever waits on the
+	// writer would hang here: better a failure that says so.
+	pinged := make(chan error, 1)
+	go func() { pinged <- server.Ping() }()
+	select {
+	case err := <-pinged:
+		if err != nil {
+			t.Fatalf("the ping was not written: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the ping never returned: the pong it was answered with got stuck behind its write")
 	}
 	if survived != nil {
 		t.Fatalf("the connection did not survive the answer: %v", survived)
 	}
 	if len(*rtts) != 1 {
 		t.Fatalf("a pong read before its ping's write returned gave %d round trips, expected 1", len(*rtts))
+	}
+}
+
+func TestAPingDoesNotTellHowLongTheServerHasBeenUp(t *testing.T) {
+	// The moment a ping left is kept as time since the process started. Sent as
+	// it is, every player could read when the server last restarted; moved by
+	// an offset drawn once per process, it still matches its pong exactly and
+	// says nothing about the clock.
+	client, server := pipeConn(t)
+	defer client.Close()
+
+	before := stamp()
+	payload := pingFrom(t, client, server)
+	after := stamp()
+	if len(payload) != 8 {
+		t.Fatalf("a ping must carry eight bytes, carried %v", payload)
+	}
+	sent := binary.BigEndian.Uint64(payload)
+	if at := time.Duration(sent - pingOffset); at < before || at > after {
+		t.Fatalf("a ping sent between %v and %v carried %v, which the offset does not take back into that span",
+			before, after, time.Duration(sent-pingOffset))
+	}
+	if sent-uint64(before) <= uint64(after-before) {
+		t.Fatalf("a ping sent between %v and %v carried %v: the time since the process started, as it is",
+			before, after, time.Duration(sent))
+	}
+}
+
+func TestThePingOffsetComesFromTheRandomSource(t *testing.T) {
+	// Whatever the source hands out is the offset, byte for byte, so nothing of
+	// the process leaks into it. Should the source fail, the offset still comes
+	// out random rather than zero, which would give the uptime away again.
+	fixed := func(b []byte) (int, error) {
+		return copy(b, []byte{0x81, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08}), nil
+	}
+	if got := drawPingOffset(fixed); got != 0x8102030405060708 {
+		t.Fatalf("eight bytes from the source became the offset %#x", got)
+	}
+	failing := func([]byte) (int, error) { return 0, errors.New("no entropy") }
+	first, second := drawPingOffset(failing), drawPingOffset(failing)
+	if first == second {
+		t.Fatalf("with the source failing, two offsets came out the same: %#x", first)
 	}
 }
 
@@ -274,7 +325,7 @@ func TestUnsolicitedPongIsIgnored(t *testing.T) {
 
 	var zero, plausible [8]byte
 	// A moment the server could well have sent, had it pinged.
-	binary.BigEndian.PutUint64(plausible[:], uint64(stamp()))
+	binary.BigEndian.PutUint64(plausible[:], uint64(stamp())+pingOffset)
 	replyWith(t, client, server,
 		clientFrame(opPong, nil),
 		clientFrame(opPong, []byte("hey")),
@@ -307,9 +358,9 @@ func TestAPongIsCountedOnce(t *testing.T) {
 }
 
 func TestAForgedPongPayloadIsIgnored(t *testing.T) {
-	// A client cannot answer a ping before it arrives, so the round trip can
-	// only be made to look longer by claiming the ping left earlier. The claim
-	// has to name the exact nanosecond the server wrote, or it is not taken.
+	// A pong that claims the ping left earlier than it did would make the round
+	// trip look longer, and one that claims later, shorter. Either claim has to
+	// name the exact value the server wrote, or it is not taken.
 	client, server := pipeConn(t)
 	defer client.Close()
 	rtts := roundTrips(server)
