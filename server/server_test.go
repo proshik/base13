@@ -19,7 +19,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"runtime"
 	"testing"
 	"time"
 )
@@ -32,12 +31,21 @@ type client struct {
 	reader *bufio.Reader
 }
 
+// dial connects and completes the handshake. The socket is closed when the test
+// ends, and not before. A client the test stops mentioning is still a player in
+// a room: left to the garbage collector, its socket's finalizer closes it
+// mid-test, the server sees the player leave and frees the seat, and the test
+// then fails on a state it never set up — a third let into a full room, a
+// returning guest seated in the host's slot, a waiter's room gone. The cleanup
+// holds the socket until the end, so every client lives exactly as long as its
+// test.
 func dial(t *testing.T, url string) *client {
 	t.Helper()
 	conn, err := net.Dial("tcp", url)
 	if err != nil {
 		t.Fatalf("could not connect: %v", err)
 	}
+	t.Cleanup(func() { conn.Close() })
 	var nonce [16]byte
 	rand.Read(nonce[:])
 	key := base64.StdEncoding.EncodeToString(nonce[:])
@@ -172,14 +180,10 @@ func TestConnectionsPastTheLimitAreRefused(t *testing.T) {
 	s := &server{hub: NewHub(), maxConns: 3}
 	addr, stop := serve(t, s)
 	defer stop()
-	// Keep every client referenced until after the extra connection's answer:
-	// otherwise a GC finalizer on the dropped *net.TCPConn can close a socket
-	// and free a slot before the extra connection knocks, and the test flakes
-	// instead of failing outright.
-	var clients []*client
+	// The three stay connected while the extra one knocks: dial holds each
+	// socket until the test ends.
 	for i := 0; i < 3; i++ {
 		c := dial(t, addr)
-		clients = append(clients, c)
 		c.sendJSON(t, hello{Action: "create", Game: "tanks"})
 		if answer := c.welcome(t); !answer.OK {
 			t.Fatalf("connection %d was refused under the limit: %s", i+1, answer.Error)
@@ -190,7 +194,6 @@ func TestConnectionsPastTheLimitAreRefused(t *testing.T) {
 	if answer := extra.welcome(t); answer.OK || answer.Reason != "busy" {
 		t.Fatalf("a connection past the limit got %+v instead of busy", answer)
 	}
-	runtime.KeepAlive(clients)
 }
 
 func TestCreateAndJoinByCode(t *testing.T) {
