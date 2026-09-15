@@ -66,12 +66,21 @@ func reasonCode(err error) string {
 // data: a housekeeping message and a game packet share one queue, and the
 // order between them must be preserved.
 //
-// At is when the room took a game packet to relay, so the writer can tell how
-// long it spent getting to the socket. A notice leaves it zero.
+// At is when the room took a game packet to relay, from stamp, so the writer
+// can tell how long it spent getting to the socket. A notice leaves it zero.
 type outgoing struct {
 	Text bool
 	Data []byte
-	At   time.Time
+	At   time.Duration
+}
+
+// stamp is the moment now, as time since the process started. Every queue holds
+// 256 slots from the moment its member sits down, and a time.Time in each slot
+// is 24 bytes where this is 8. startTime carries the monotonic clock, so a
+// stamp never jumps with the wall clock. It is never zero either: zero is a
+// slot nobody stamped.
+func stamp() time.Duration {
+	return max(time.Since(startTime), 1)
 }
 
 // Member is one occupant of a room. Sending goes through a channel rather
@@ -304,7 +313,7 @@ func (r *Room) Leave(member *Member) {
 func (r *Room) Broadcast(from *Member, data []byte) {
 	// One reading for every recipient, taken before the lock: a wait for the
 	// room is the server's own delay as much as a slow socket is.
-	at := time.Now()
+	at := stamp()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.journal.count() < maxJournal && r.journal.size()+len(data) <= maxJournalBytes {

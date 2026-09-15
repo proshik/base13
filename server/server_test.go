@@ -715,6 +715,36 @@ func TestArrivalStatsNoticeUnevenPackets(t *testing.T) {
 	}
 }
 
+func TestAGapAcrossAWindowBoundaryBelongsToTheNextWindow(t *testing.T) {
+	// A window closes on a packet, so the gap into the next window's first packet
+	// began in the window before. Forgotten with that window, a stall ending there
+	// would go unreported, and a window that closed on its only packet — a player
+	// quiet for longer than the window, the worst stream there is — would report
+	// no gap at all, the best.
+	base := time.Unix(0, 0)
+	var flow arrivals
+	flow.note(base)
+	if flow.measured() {
+		t.Fatalf("a stream's very first packet has no gap before it, yet the window measured one of %v", flow.worstGap())
+	}
+	flow.forget()
+	flow.note(base.Add(300 * time.Millisecond))
+	if !flow.measured() || flow.worstGap() < 300*time.Millisecond {
+		t.Fatalf("a stall across the window boundary was measured as %v (measured %v), expected 300ms",
+			flow.worstGap(), flow.measured())
+	}
+	if flow.count() != 1 {
+		t.Fatalf("the window counted %d packets, expected its own one", flow.count())
+	}
+
+	// The stall belongs to one window: the one after it starts over.
+	flow.forget()
+	flow.note(base.Add(316 * time.Millisecond))
+	if got := flow.worstGap(); got != 16*time.Millisecond {
+		t.Fatalf("the window after the stall reported %v, expected its own gap of 16ms", got)
+	}
+}
+
 func TestServesOverTLSWhenGivenACertificate(t *testing.T) {
 	// Without HTTPS the web build does not start at all: Godot requires a
 	// secure context. So the server must be able to serve over TLS itself —
@@ -1521,13 +1551,17 @@ func TestWorstGapIsObservedEachWindow(t *testing.T) {
 	// frame. It is observed once a window, where the log line reports it, and the
 	// window then starts over: a stall long past must not colour every window
 	// that follows it.
+	//
+	// Nothing here waits on the clock to line up. A packet's window is decided
+	// before the packet is relayed, so once the guest has it, its observation is
+	// in the render; and every gap below is bounded from beneath by a sleep
+	// between two packets the guest already received.
 	s := &server{hub: NewHub(), statsEvery: 50 * time.Millisecond}
 	addr, stop := serve(t, s)
 	defer stop()
 	bucket := func(le string) float64 {
 		return metricValue(t, s, `relay_packet_gap_worst_seconds_bucket{le="`+le+`"}`)
 	}
-	stalls := func() float64 { return bucket("0.25") - bucket("0.1") }
 
 	host := dial(t, addr)
 	host.sendJSON(t, hello{Action: "create", Game: "tanks", Seed: 1})
@@ -1537,30 +1571,39 @@ func TestWorstGapIsObservedEachWindow(t *testing.T) {
 	guest.welcome(t)
 	expectSeries(t, s, map[string]float64{"relay_packet_gap_worst_seconds_count": 0})
 
-	// Two packets back to back first: should the first of them close a window
-	// the server opened while the guest was still joining, the second is there
-	// to measure the stall from.
+	// The host waited for the partner longer than a window, so their first packet
+	// closes one. There is no gap before a stream's first packet, and a window
+	// without one reports nothing: a gap of zero would read as a perfect stream.
 	packet := []byte{1, 0, 0, 0, 0, 31}
-	host.send(t, packet)
+	time.Sleep(100 * time.Millisecond)
 	host.send(t, packet)
 	guest.receive(t)
-	guest.receive(t)
+	expectSeries(t, s, map[string]float64{"relay_packet_gap_worst_seconds_count": 0})
+
+	// A stall of a fifth of a second. The packet that ends it comes more than a
+	// window after the last one, so it closes a window wherever the boundaries
+	// fell, and that window holds the whole stall.
 	time.Sleep(200 * time.Millisecond)
 	host.send(t, packet)
 	guest.receive(t)
-	eventually(t, func() bool { return stalls() == 1 })
-	calm := bucket("0.1")
+	expectSeries(t, s, map[string]float64{
+		"relay_packet_gap_worst_seconds_count":            1,
+		`relay_packet_gap_worst_seconds_bucket{le="0.1"}`: 0,
+		`relay_packet_gap_worst_seconds_bucket{le="0.5"}`: 1,
+	})
+	if got := metricValue(t, s, "relay_packet_gap_worst_seconds_sum"); got < 0.2 {
+		t.Fatalf("a stall of at least 200ms was observed as %vs", got)
+	}
 
-	// Then an even stream across a few windows: each reports its own worst gap,
-	// a short one, and the stall is not reported again.
-	for range 15 {
+	// Then an even stream: the windows after the stall start over and report
+	// short gaps of their own. Carried over, the stall would fill every one.
+	for deadline := time.Now().Add(2 * time.Second); bucket("0.1") == 0; {
+		if time.Now().After(deadline) {
+			t.Fatal("no window after the stall reported a short gap: the stall carried over into all of them")
+		}
 		time.Sleep(10 * time.Millisecond)
 		host.send(t, packet)
 		guest.receive(t)
-	}
-	eventually(t, func() bool { return bucket("0.1") > calm })
-	if got := stalls(); got != 1 {
-		t.Fatalf("%v windows reported a gap of a fifth of a second, expected only the one that held it", got)
 	}
 	checkExposition(t, renderMetrics(s))
 }
@@ -1580,6 +1623,7 @@ func TestForwardDelayIsObservedAfterTheWrite(t *testing.T) {
 	expectSeries(t, s, map[string]float64{"relay_forward_seconds_count": 0})
 
 	packet := []byte{1, 0, 0, 0, 0, 31}
+	began := time.Now()
 	room.Broadcast(host, packet)
 	// The pipe takes the bytes only when they are read, and they are read only
 	// thirty milliseconds after the packet was relayed.
@@ -1593,11 +1637,18 @@ func TestForwardDelayIsObservedAfterTheWrite(t *testing.T) {
 		t.Fatalf("the packet never reached the partner: %v", err)
 	}
 	eventually(t, func() bool { return metricValue(t, s, "relay_forward_seconds_count") == 1 })
+	took := time.Since(began)
+	// At least the reader's thirty milliseconds, and at most the time the test
+	// itself watched pass since before the relay: both bounds hold on a machine
+	// under any load, where a bucket just above thirty milliseconds would not.
 	expectSeries(t, s, map[string]float64{
 		`relay_forward_seconds_bucket{le="0.01"}`: 0,
-		`relay_forward_seconds_bucket{le="0.05"}`: 1,
+		`relay_forward_seconds_bucket{le="1"}`:    1,
 	})
-	expectBetween(t, s, "relay_forward_seconds_sum", 0.03, 1)
+	if got := metricValue(t, s, "relay_forward_seconds_sum"); got < 0.03 || got > took.Seconds() {
+		t.Fatalf("a packet the partner took thirty milliseconds to read was observed as %vs, "+
+			"expected at least 0.03s and at most the %v since before it was relayed", got, took)
+	}
 
 	// A write that fails put nothing into anybody's socket: no delay to report.
 	partner.Close()
@@ -1615,7 +1666,7 @@ func TestNoticesDoNotObserveForwardDelay(t *testing.T) {
 	// A notice about the room is not the game's traffic, and nobody's frame
 	// waits on it. Only a game packet the room stamped as it relayed it is
 	// observed; one with no stamp has no moment to measure from, and observed
-	// anyway it would report a delay from the start of time.
+	// anyway it would report the whole time since the process started.
 	s := &server{hub: NewHub()}
 	room, _ := s.hub.Create("tanks", 1)
 	host, _ := room.Join()
@@ -1626,7 +1677,7 @@ func TestNoticesDoNotObserveForwardDelay(t *testing.T) {
 	go pump(conn, guest, time.Hour)
 
 	room.Notify(host, event("joined", 2))
-	guest.Send <- outgoing{Text: true, Data: event("joined", 2), At: time.Now()}
+	guest.Send <- outgoing{Text: true, Data: event("joined", 2), At: stamp()}
 	guest.Send <- outgoing{Data: []byte{7}}
 	// Last in the queue, a packet the room relayed. The writer takes the queue in
 	// order, so once it is observed, everything before it has been written.

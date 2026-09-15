@@ -385,8 +385,8 @@ func pump(conn *Conn, member *Member, every time.Duration) {
 			// bytes the packet was still the server's to deliver, and a
 			// partner slow to take it off the wire is part of the delay. A
 			// notice is not the game's traffic, and nothing stamped it.
-			if !packet.Text && !packet.At.IsZero() {
-				member.stats.observeForward(time.Since(packet.At))
+			if !packet.Text && packet.At != 0 {
+				member.stats.observeForward(stamp() - packet.At)
 			}
 		case <-ping.C:
 			if err := conn.Ping(); err != nil {
@@ -451,7 +451,9 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 			log.Printf("room %s, slot %d: %.0fs, %d packets, worst gap %v",
 				room.Code, member.Slot, now.Sub(window).Seconds(),
 				flow.count(), flow.worstGap().Round(time.Millisecond))
-			s.hub.stats.observeWorstGap(flow.worstGap())
+			if flow.measured() {
+				s.hub.stats.observeWorstGap(flow.worstGap())
+			}
 			flow.forget()
 			window = now
 		}

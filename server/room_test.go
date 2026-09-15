@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unsafe"
 )
 
 func TestCodeAvoidsLookalikeCharacters(t *testing.T) {
@@ -922,4 +923,14 @@ func TestAnEvictionIsCounted(t *testing.T) {
 		t.Fatalf("players leaving on their own made the count %v, expected it to stay 2", got)
 	}
 	checkExposition(t, renderMetrics(s))
+}
+
+func TestAQueuedPacketIsSmall(t *testing.T) {
+	// Every member's queue is allocated whole as they sit down, 256 slots of it.
+	// A slot is a frame kind, the packet and when the room took it; carried as a
+	// time.Time, that moment alone made a slot 56 bytes and cost every seated
+	// player six kilobytes more for a number eight bytes hold.
+	if size := unsafe.Sizeof(outgoing{}); size > 40 {
+		t.Fatalf("a queued packet takes %d bytes, expected at most 40", size)
+	}
 }
