@@ -11,14 +11,15 @@ package main
 //
 // None of it is taken on trust. A report is whatever a stranger chose to write.
 // It is read into a fixed shape or dropped, every figure is held to what a real
-// window can be, and a connection is heard at most once an interval. Nothing
-// from a report is relayed, journaled or logged. A forged report can still skew
-// the figures within those bounds, and that is the price of hearing from the
-// player's side at all.
+// window can be, and over time a connection is heard no more than once an
+// interval. Nothing from a report is relayed, journaled or logged. A forged
+// report can still skew the figures within those bounds, and that is the price
+// of hearing from the player's side at all.
 
 import (
 	"bytes"
 	"encoding/json"
+	"math"
 	"strconv"
 	"time"
 
@@ -29,6 +30,13 @@ import (
 // at full speed. The interval leaves room for a window that ran somewhat fast
 // while catching up, and none for a stream of reports.
 const defaultReportEvery = 4 * time.Second
+
+// How many pace reports a connection may have taken at once. The allowance
+// refills by one every interval. Two, not one: on a bad link a report held up
+// on the way arrives close to the next one sent on time, and that link's
+// arrival jitter is exactly what these figures are for. Over time the bound is
+// still one report an interval.
+const paceBurst = 2
 
 // pace is one window of a player's game, as its own side measured it.
 type pace struct {
@@ -57,8 +65,8 @@ const (
 // few, a number that is not whole, a string, a null. Keys are compared exactly,
 // not through a struct, because the standard decoder folds case and fills a
 // missing or null field with zero, and a zero here would count as a real
-// window. Spacing and key order are up to the writer. A pace report comes back
-// already clamped.
+// window. Spacing, key order and how a whole number is spelled are up to the
+// writer. A pace report comes back already clamped.
 func readReport(data []byte) (reportKind, pace) {
 	var message map[string]json.RawMessage
 	if json.Unmarshal(data, &message) != nil || len(message) != 1 {
@@ -84,16 +92,30 @@ func readReport(data []byte) (reportKind, pace) {
 		return malformedReport, pace{}
 	}
 	for _, figure := range figures {
-		// A missing key reads as empty, and neither that nor anything but a
-		// whole number passes. The message already parsed as JSON, so this
-		// text is a single JSON value.
-		n, err := strconv.Atoi(string(bytes.TrimSpace(fields[figure.name])))
-		if err != nil {
+		n, ok := wholeNumber(fields[figure.name])
+		if !ok {
 			return malformedReport, pace{}
 		}
 		*figure.into = n
 	}
 	return paceReport, clamp(p)
+}
+
+// wholeNumber reads one JSON value as a whole number, however it is spelled:
+// 60, 60.0 or 6e1. Godot writes every float with a point even when it is whole,
+// and the frame rate it measures is a float. A fraction is not a figure, and
+// neither is a string, a null, a number past what a double holds, or a missing
+// key, which reads as empty. The message already parsed as JSON, so the text
+// is a single JSON value, and every JSON number is one strconv reads.
+func wholeNumber(raw json.RawMessage) (int, bool) {
+	f, err := strconv.ParseFloat(string(bytes.TrimSpace(raw)), 64)
+	if err != nil || f != math.Trunc(f) {
+		return 0, false
+	}
+	// Held within a billion either way before it becomes an int. Converting a
+	// double past what an int holds gives no defined value, and every figure's
+	// own limit, applied by clamp, lies far inside this.
+	return int(min(max(f, -1e9), 1e9)), true
 }
 
 // clamp holds each figure to what a real window can be. Speed stops at twice
@@ -128,18 +150,50 @@ func verdict(speed, waits int) string {
 // reportGate is what one connection's reports have had taken so far. It lives
 // on the goroutine that reads the connection and nowhere else.
 type reportGate struct {
-	lastPace time.Time // when the last pace report was taken; zero before the first
-	desynced bool      // whether this connection has already reported a desync
+	// The pace allowance, kept as time rather than as a count of reports: an
+	// interval of credit is one report. It is full at paceBurst intervals.
+	// paceSeen is when the credit was last brought up to date, and zero until
+	// the first pace report, when a connection starts with a full allowance.
+	paceCredit time.Duration
+	paceSeen   time.Time
+	desynced   bool // whether this connection has already reported a desync
+}
+
+// allowPace reports whether a pace report arriving now fits the connection's
+// allowance, and spends it if it does. Time since the last report earns
+// credit, up to paceBurst intervals of it, and a report taken spends one
+// interval. A report turned away spends nothing but still brings the credit up
+// to date, so turning one away never costs the next. The clock is a parameter
+// so a test can hold it.
+func (g *reportGate) allowPace(now time.Time, every time.Duration) bool {
+	full := paceBurst * every
+	if g.paceSeen.IsZero() {
+		g.paceCredit = full
+	} else {
+		// Bounded before it is added, so a connection quiet for years cannot
+		// overflow the sum, and a clock that stepped back earns nothing.
+		g.paceCredit = min(g.paceCredit+min(max(now.Sub(g.paceSeen), 0), full), full)
+	}
+	g.paceSeen = now
+	if g.paceCredit < every {
+		return false
+	}
+	g.paceCredit -= every
+	return true
 }
 
 // takeReport counts one text message a seated player sent after the hello.
 //
-// A connection has a pace report taken at most once an interval. The first one
-// is always taken, and one arriving sooner after the last taken report is
-// rejected as early. A desync is not a window, so the interval does not apply,
-// but a connection reports it only once: a repeat is also rejected as early, so
-// a client that keeps repeating it cannot keep taking the room's lock. The room
-// counts a desynced match once, whichever side reports it first.
+// A connection may have two pace reports taken at once, and earns one back
+// every interval. A report past that allowance is rejected as early. A desync
+// is not a window, so the allowance does not apply, but a connection reports a
+// desync only once: a repeat is also rejected as early, so a client that keeps
+// repeating it cannot keep taking the room's lock.
+//
+// A desync counts once a room, whichever side reports it first, and only in a
+// room that has held a pair: before a partner came there was no match to part.
+// A desync from a room that never paired is neither counted nor rejected, since
+// it is well formed and on time. It still uses up the connection's one desync.
 //
 // Nothing here writes to the log. A report's content belongs to a stranger, and
 // a rejection is a count, not a line.
@@ -157,11 +211,10 @@ func (s *server) takeReport(gate *reportGate, member *Member, room *Room, data [
 			counted.matchDesynced(room.kind())
 		}
 	case paceReport:
-		if !gate.lastPace.IsZero() && now.Sub(gate.lastPace) < s.reportInterval() {
+		if !gate.allowPace(now, s.reportInterval()) {
 			counted.reportRejected("early")
 			return
 		}
-		gate.lastPace = now
 		counted.paced(member.client.platform, p)
 	default:
 		counted.reportRejected("malformed")
@@ -232,11 +285,12 @@ func newClientReports(f families) clientReports {
 			platformLabels, fpsBuckets),
 		desynced: f.counterVec("relay_desynced_matches_total",
 			"Rooms whose two players' worlds parted, as a player reported it; counted once a room, "+
-				"however many of its players report it.",
+				"however many of its players report it, and only in a room that has held a pair.",
 			roomKindLabels),
 		rejected: f.counterVec("relay_client_reports_rejected_total",
-			"Reports from players that were dropped: early when a connection sent one sooner than the interval "+
-				"allows, or reported a desync twice; malformed when it was neither of the two shapes.",
+			"Reports from players that were dropped: early when a connection had used up its allowance "+
+				"(two at once, then one an interval) or reported a desync twice; "+
+				"malformed when it was neither of the two shapes.",
 			rejectionLabels),
 	}
 }

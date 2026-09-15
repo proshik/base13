@@ -303,44 +303,102 @@ func TestVerdictFollowsWaitsAndSpeed(t *testing.T) {
 func TestEarlyReportsAreRejected(t *testing.T) {
 	// A player's side reports once a window of several seconds. More often than
 	// that is not a faster game but somebody writing reports by hand, and each
-	// report weighs in the figures as a window of its own: past the first, one
-	// per interval is taken, and the rest are counted and dropped. A desync is
-	// not a window and is not held to the interval.
-	const every = time.Second
-	s := &server{hub: NewHub(), reportEvery: every}
+	// report weighs in the figures as a window of its own. A connection may have
+	// two taken at once, and past that allowance a report is counted and
+	// dropped. A desync is not a window and is not held to the allowance.
+	//
+	// The interval here is an hour, so no runner is slow enough to earn a report
+	// back mid-test. Where exactly the allowance refills is pinned by
+	// TestThePaceAllowanceIsABucketOfTwo, with the clock in the test's hands.
+	s := &server{hub: NewHub(), reportEvery: time.Hour}
 	addr, stop := serve(t, s)
 	defer stop()
-	player := dial(t, addr)
-	player.sendJSON(t, hello{Action: "quick", Game: "tanks", Seed: 1, Platform: "windows"})
-	player.welcome(t)
+	host, _, _ := seatPair(t, addr)
 
-	windows := `relay_client_windows_total{platform="windows",verdict="smooth"}`
+	windows := `relay_client_windows_total{platform="macos",verdict="smooth"}`
 	early := `relay_client_reports_rejected_total{why="early"}`
-	report := paceBody(pace{Speed: 100, Delay: 4, FPS: 60})
+	report := paceBody(pace{Speed: 100, Delay: 6, FPS: 60})
 
-	player.sendText(t, report)
-	eventually(t, func() bool { return metricValue(t, s, windows) == 1 })
-	// The report was taken before this moment, which the wait below counts from.
-	taken := time.Now()
-	player.sendText(t, report)
+	host.sendText(t, report)
+	host.sendText(t, report)
+	eventually(t, func() bool { return metricValue(t, s, windows) == 2 })
+	host.sendText(t, report)
 	eventually(t, func() bool { return metricValue(t, s, early) == 1 })
-	player.sendText(t, desyncBody)
-	eventually(t, func() bool { return metricValue(t, s, `relay_desynced_matches_total{kind="quick"}`) == 1 })
+	host.sendText(t, desyncBody)
+	eventually(t, func() bool { return metricValue(t, s, `relay_desynced_matches_total{kind="code"}`) == 1 })
 	expectSeries(t, s, map[string]float64{
-		windows: 1,
+		windows: 2,
 		early:   1,
-		`relay_client_speed_ratio_count{platform="windows"}`:   1,
-		`relay_client_fps_count{platform="windows"}`:           1,
-		`relay_client_input_delay_ticks_count`:                 1,
+		`relay_client_speed_ratio_count{platform="macos"}`:     2,
+		`relay_client_fps_count{platform="macos"}`:             2,
+		`relay_client_input_delay_ticks_count`:                 2,
 		`relay_client_reports_rejected_total{why="malformed"}`: 0,
 	})
+}
 
-	// The interval runs from the report that was taken, not from the one turned
-	// away: once it has passed, the next report is taken again.
-	time.Sleep(time.Until(taken.Add(every)))
-	player.sendText(t, report)
-	eventually(t, func() bool { return metricValue(t, s, windows) == 2 })
-	expectSeries(t, s, map[string]float64{early: 1})
+func TestThePaceAllowanceIsABucketOfTwo(t *testing.T) {
+	// A connection's allowance holds two reports and earns one back every
+	// interval. On a bad link a report held up on the way arrives close behind
+	// the one before it, or just ahead of the next one sent on time; turning
+	// either away would hide exactly the jitter these figures exist to show.
+	// Over time the bound stays one report an interval.
+	const every = 250 * time.Millisecond
+	start := time.Unix(1_700_000_000, 0)
+	var gate reportGate
+	step := func(at time.Duration, want bool, what string) {
+		t.Helper()
+		if got := gate.allowPace(start.Add(at), every); got != want {
+			t.Errorf("%s (at %v): taken %v, expected %v", what, at, got, want)
+		}
+	}
+	step(0, true, "the first report on a connection")
+	step(0, true, "a second at the same moment")
+	step(0, false, "a third at the same moment")
+	step(every-1, false, "a nanosecond short of an interval after them")
+	step(every, true, "exactly an interval after them")
+	step(every, false, "another at that same moment")
+
+	// A report every five seconds against a limit of four, one of them two
+	// seconds late: the late one and the next, on time, arrive three seconds
+	// apart, and both are taken.
+	var honest reportGate
+	for _, at := range []time.Duration{0, 5, 12, 15, 20, 25} {
+		if !honest.allowPace(start.Add(at*every/4), every) {
+			t.Errorf("a report at %v, on a five-second cadence with one late, was turned away", at*every/4)
+		}
+	}
+
+	// A flood gets its two, then one an interval: a hundred intervals of a
+	// report every tenth of one take a hundred and two.
+	var flood reportGate
+	taken := 0
+	for k := range 1001 {
+		if flood.allowPace(start.Add(time.Duration(k)*every/10), every) {
+			taken++
+		}
+	}
+	if taken != paceBurst+100 {
+		t.Errorf("a report every tenth of an interval for a hundred intervals: %d taken, expected %d",
+			taken, paceBurst+100)
+	}
+
+	// Left at zero, the interval is four seconds, and a report the server reads
+	// goes through the same allowance.
+	if got := (&server{}).reportInterval(); got != 4*time.Second {
+		t.Fatalf("a zero interval means %v, expected 4s", got)
+	}
+	s := &server{hub: NewHub()}
+	room, _ := s.hub.Create("tanks", 1)
+	member, _ := room.JoinAs(client{platform: "linux"})
+	var reports reportGate
+	report := paceBody(pace{Speed: 100, Delay: 6, FPS: 60})
+	for _, at := range []time.Duration{0, 0, 0, 4*time.Second - 1, 4 * time.Second} {
+		s.takeReport(&reports, member, room, report, start.Add(at))
+	}
+	expectSeries(t, s, map[string]float64{
+		`relay_client_windows_total{platform="linux",verdict="smooth"}`: 3,
+		`relay_client_reports_rejected_total{why="early"}`:              2,
+	})
 }
 
 func TestMalformedReportIsRejectedWithoutClosing(t *testing.T) {
@@ -358,11 +416,13 @@ func TestMalformedReportIsRejectedWithoutClosing(t *testing.T) {
 		`{"report":{"speed":100,"waits":0,"delay":4,"fps":60},"desync":true}`,
 		`{}`,
 		`{"report":{"speed":95.5,"waits":0,"delay":4,"fps":60}}`,
-		`{"report":{"speed":95.0,"waits":0,"delay":4,"fps":60}}`,
-		`{"report":{"speed":1e2,"waits":0,"delay":4,"fps":60}}`,
+		`{"report":{"speed":95,"waits":0,"delay":4,"fps":59.94}}`,
+		`{"report":{"speed":1.5e0,"waits":0,"delay":4,"fps":60}}`,
+		`{"report":{"speed":95,"waits":0,"delay":-0.5,"fps":60}}`,
+		`{"report":{"speed":1e400,"waits":0,"delay":4,"fps":60}}`,
 		`{"report":{"speed":"95","waits":0,"delay":4,"fps":60}}`,
 		`{"report":{"speed":null,"waits":0,"delay":4,"fps":60}}`,
-		`{"report":{"speed":100000000000000000000,"waits":0,"delay":4,"fps":60}}`,
+		`{"report":{"speed":true,"waits":0,"delay":4,"fps":60}}`,
 		`{"report":{"speed":95,"waits":0,"delay":4}}`,
 		`{"report":{"speed":95,"waits":0,"delay":4,"fps":60,"ping":3}}`,
 		`{"report":{"Speed":95,"waits":0,"delay":4,"fps":60}}`,
@@ -400,13 +460,53 @@ func TestMalformedReportIsRejectedWithoutClosing(t *testing.T) {
 	guest.send(t, answer)
 	expectPacket(t, host, answer)
 
-	// Spacing and the order of the fields are the writer's own business: the
-	// same report laid out another way is taken.
-	host.sendText(t, []byte("{ \"report\" : {\"fps\": 60,\n \"delay\": 4, \"waits\": 0, \"speed\": 100} }"))
+	// Spacing, the order of the fields and a whole number written as a float are
+	// the writer's own business: Godot writes its report this way, and it is taken.
+	host.sendText(t, []byte("{ \"report\" : {\"fps\": 60.0,\n \"delay\": 6, \"waits\": 0, \"speed\": 100} }"))
 	eventually(t, func() bool {
 		return metricValue(t, s, `relay_client_windows_total{platform="macos",verdict="smooth"}`) == 1
 	})
-	expectSeries(t, s, map[string]float64{malformed: float64(len(bad))})
+	expectSeries(t, s, map[string]float64{
+		malformed: float64(len(bad)),
+		`relay_client_fps_bucket{platform="macos",le="55"}`: 0,
+		`relay_client_fps_bucket{platform="macos",le="60"}`: 1,
+	})
+}
+
+func TestAWholeNumberIsTakenHoweverItIsWritten(t *testing.T) {
+	// Godot writes every float with a point, even a whole one, and the frame rate
+	// it measures is a float: 60.0 is sixty. A whole number is a figure however
+	// it is spelled, and still held to its limits; a fraction is not a figure
+	// and makes the report malformed.
+	for _, c := range []struct {
+		body string
+		want pace
+	}{
+		{`{"report":{"speed":100,"waits":0,"delay":6,"fps":60}}`, pace{Speed: 100, Delay: 6, FPS: 60}},
+		{`{"report":{"speed":95.0,"waits":2.0,"delay":6.0,"fps":60.0}}`, pace{Speed: 95, Waits: 2, Delay: 6, FPS: 60}},
+		{`{"report":{"speed":1e2,"waits":0,"delay":6E0,"fps":6e1}}`, pace{Speed: 100, Delay: 6, FPS: 60}},
+		{`{"report":{"speed":1.5e1,"waits":0,"delay":6,"fps":60}}`, pace{Speed: 15, Delay: 6, FPS: 60}},
+		{`{"report":{"speed":-0.0,"waits":-3.0,"delay":6,"fps":60}}`, pace{Delay: 6, FPS: 60}},
+		{`{"report":{"speed":1e20,"waits":100000000000000000000,"delay":1e9,"fps":1e300}}`,
+			pace{Speed: 200, Waits: 300, Delay: 64, FPS: 1000}},
+		{`{"report":{"speed":-1e20,"waits":0,"delay":6,"fps":60}}`, pace{Delay: 6, FPS: 60}},
+	} {
+		kind, got := readReport([]byte(c.body))
+		if kind != paceReport || got != c.want {
+			t.Errorf("%s read as kind %d %+v, expected a pace report %+v", c.body, kind, got, c.want)
+		}
+	}
+	for _, body := range []string{
+		`{"report":{"speed":95.5,"waits":0,"delay":6,"fps":60}}`,
+		`{"report":{"speed":100,"waits":0,"delay":6,"fps":59.94}}`,
+		`{"report":{"speed":1.5e0,"waits":0,"delay":6,"fps":60}}`,
+		`{"report":{"speed":100,"waits":0,"delay":6,"fps":1e-1}}`,
+		`{"report":{"speed":1e400,"waits":0,"delay":6,"fps":60}}`,
+	} {
+		if kind, _ := readReport([]byte(body)); kind != malformedReport {
+			t.Errorf("%s read as kind %d, expected malformed", body, kind)
+		}
+	}
 }
 
 func TestADesyncIsCountedOncePerRoom(t *testing.T) {
@@ -446,21 +546,89 @@ func TestADesyncIsCountedOncePerRoom(t *testing.T) {
 		`relay_client_input_delay_ticks_count`:             0,
 	})
 
-	// Another room's match is its own: a desync in a quick game is counted under
-	// quick, and the room says only once that it was the first to hear.
+	// Another room's match is its own: a desync in a quick game, once two
+	// strangers met there, is counted under quick.
 	room, member, err := s.hub.QuickAs("tanks", 2, client{platform: "ios"})
 	if err != nil {
 		t.Fatalf("no quick room: %v", err)
 	}
+	if paired, _, err := s.hub.QuickAs("tanks", 3, client{platform: "android"}); err != nil || paired != room {
+		t.Fatalf("the second quick player was not seated with the first: %v", err)
+	}
 	var reports reportGate
 	s.takeReport(&reports, member, room, desyncBody, time.Now())
 	expectSeries(t, s, map[string]float64{desynced("code"): 1, desynced("quick"): 1})
+
+	// And a room says only once that it was the first to hear.
 	bare := newRoom("ABCDEF", "tanks", 3)
+	bare.Join()
+	bare.Join()
 	if !bare.noteDesync() {
-		t.Error("the first desync in a room was not noted as the first")
+		t.Error("the first desync in a paired room was not noted as the first")
 	}
 	if bare.noteDesync() {
 		t.Error("a second desync in the same room was noted as the first again")
+	}
+}
+
+func TestADesyncBeforeAnyPairIsNotCounted(t *testing.T) {
+	// Two worlds cannot part before there are two: a desync from a room that
+	// never held a pair is not a broken match. Counted, a script that opens a
+	// room, says desync and leaves, over and over, would grow the count without
+	// bound and wake whoever is on call. Such a desync is neither counted nor
+	// rejected: it is well formed and on time, it just describes no match. It
+	// still uses up the connection's one desync, so repeating it is early.
+	s := &server{hub: NewHub()}
+	addr, stop := serve(t, s)
+	defer stop()
+	desynced := func(kind string) string { return `relay_desynced_matches_total{kind="` + kind + `"}` }
+	early := `relay_client_reports_rejected_total{why="early"}`
+	malformed := `relay_client_reports_rejected_total{why="malformed"}`
+
+	// A message that is certainly malformed follows each desync: once it is
+	// counted, the server has read the desync ahead of it.
+	settled := func(c *wsClient, rejected float64) {
+		t.Helper()
+		c.sendText(t, []byte(`not a report`))
+		eventually(t, func() bool { return metricValue(t, s, malformed) == rejected })
+	}
+	for i := range 3 {
+		action := hello{Action: "create", Game: "tanks", Seed: 1}
+		if i == 1 {
+			action = hello{Action: "quick", Game: "tanks", Seed: 1}
+		}
+		solo := dial(t, addr)
+		solo.sendJSON(t, action)
+		solo.welcome(t)
+		solo.sendText(t, desyncBody)
+		settled(solo, float64(i+1))
+		solo.conn.Close()
+	}
+	expectSeries(t, s, map[string]float64{desynced("code"): 0, desynced("quick"): 0, early: 0})
+
+	// Alone in a room, a player says it twice: the second is early, and still
+	// nothing is counted.
+	host := dial(t, addr)
+	host.sendJSON(t, hello{Action: "create", Game: "tanks", Seed: 1})
+	code := host.welcome(t).Code
+	host.sendText(t, desyncBody)
+	host.sendText(t, desyncBody)
+	settled(host, 4)
+	expectSeries(t, s, map[string]float64{desynced("code"): 0, early: 1})
+
+	// The room is left free to count a real one: once a partner has come, the
+	// partner's desync is the match's.
+	guest := dial(t, addr)
+	guest.sendJSON(t, hello{Action: "join", Game: "tanks", Code: code})
+	guest.welcome(t)
+	guest.sendText(t, desyncBody)
+	eventually(t, func() bool { return metricValue(t, s, desynced("code")) == 1 })
+	expectSeries(t, s, map[string]float64{desynced("quick"): 0, early: 1})
+
+	bare := newRoom("ABCDEF", "tanks", 3)
+	bare.Join()
+	if bare.noteDesync() {
+		t.Error("a room with a single player noted a desync")
 	}
 }
 
@@ -501,6 +669,7 @@ func TestReportsNeverReachTheLog(t *testing.T) {
 	numbers := `{"report":{"speed":141421,"waits":271828,"delay":161803,"fps":314159}}`
 	for _, body := range []string{
 		numbers,
+		numbers,
 		numbers, // early
 		`{"desync":true}`,
 		`{"desync":true}`, // early
@@ -513,7 +682,7 @@ func TestReportsNeverReachTheLog(t *testing.T) {
 	host.send(t, packet)
 	expectPacket(t, guest, packet)
 	expectSeries(t, s, map[string]float64{
-		`relay_client_windows_total{platform="macos",verdict="smooth"}`: 1,
+		`relay_client_windows_total{platform="macos",verdict="smooth"}`: 2,
 		`relay_client_reports_rejected_total{why="early"}`:              2,
 		`relay_client_reports_rejected_total{why="malformed"}`:          2,
 		`relay_desynced_matches_total{kind="code"}`:                     1,

@@ -264,11 +264,13 @@ func (r *Room) swept() {
 
 // noteDesync marks the room's match as desynced, and reports whether this call
 // was the one that marked it: the room is counted once, by whoever says it
-// first.
+// first. A room that never held a pair had no match to part. Its desync is not
+// noted and leaves the room unmarked, so a script that opens rooms only to say
+// desync counts nothing, and a real one after a partner comes is still counted.
 func (r *Room) noteDesync() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.desynced {
+	if !r.paired || r.desynced {
 		return false
 	}
 	r.desynced = true
