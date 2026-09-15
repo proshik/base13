@@ -19,10 +19,9 @@ Application identifier: `com.proshik.base13`.
 - Deployment plan (next up): `docs/plans/2026-09-04-deployment.md`
 - Hardening plan (closed, gates the deployment's release): `docs/plans/2026-09-12-hardening.md`
 - Homebrew cask plan (after the deployment): `docs/plans/2026-09-04-homebrew-cask.md`
-- Network lag plan (adaptive delay, carried between levels, gates the next release):
-  `docs/plans/2026-09-14-network-lag.md`
-- Metrics plan (implemented; ships in the next image, the release the network lag plan
-  gates): `docs/plans/2026-09-14-metrics.md`
+- Network lag plan (adaptive delay, carried between levels; shipped in `0.5.0`, the live
+  check waits for a public machine): `docs/plans/2026-09-14-network-lag.md`
+- Metrics plan (closed, shipped in `0.5.0`): `docs/plans/2026-09-14-metrics.md`
 
 The work is split into four subprojects: **1** the core and the single-player game,
 **2** mobile platforms, **3** network co-op, **4** release to the stores.
@@ -55,15 +54,19 @@ Now every message, journal, room and connection has a ceiling, every read and wr
 deadline, the server pings on its own, and the engine travels gzipped: 9.6 MB instead of
 37.7 on the first visit.
 
-The release is out: image `0.4.0` was published on 2026-09-14. What is left of the
-deployment plan is making that package public and a machine to put it on.
+The current release is `0.5.0`, published on 2026-09-15: the image
+`ghcr.io/proshik/base13:0.5.0` (also `latest`) with the network lag work and the server
+metrics, and the desktop builds under the `v0.5.0` GitHub release. The package is public and
+pulls without a login. What is left of the deployment plan is a machine to put it on; run the
+image with the metrics port as the plan's Task 4 shows.
 
 **After it: installation through Homebrew** —
 `docs/plans/2026-09-04-homebrew-cask.md`. Gated on two things only the repository owner
 can do: making the repository public — done on 2026-09-13 — and creating a `TAP_TOKEN`
 secret with write access to `proshik/homebrew-tap`. Task 1 of that plan runs before the
-gate, once a desktop release exists — `v0.1.0` and `v0.1.1` were deleted with the old
-history; everything after it does not.
+gate and needed a desktop release; `v0.5.0` is the first one since `v0.1.0` and `v0.1.1`
+were deleted with the old history, so it can go now. Everything after it waits for the
+token.
 
 ## Repository layout
 
@@ -333,6 +336,10 @@ Rakes we have already stepped on:
   matching once the game's bundle is assembled, and macOS says "damaged, move to the
   bin" — wording about a corrupted file, though the problem is the signature. With the
   built-in ad-hoc signature you get the ordinary "unidentified developer" instead.
+- **A version in the macOS preset wins over the project's.** `application/short_version`
+  and `application/version` held `0.1.0`, so `Info.plist` said 0.1.0 whatever the release
+  stamped into `application/config/version`. Left empty, the export takes the project's
+  version — a trial export stamped 9.9.9 came out as 9.9.9.
 - **A browser cannot send a WebSocket ping.** The browser's API has no such call, and
   Godot's web peer only stores `heartbeat_interval` — so the setting that keeps a desktop
   client alive through a proxy does nothing in the browser, which is the platform the
