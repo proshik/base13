@@ -15,7 +15,12 @@ FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS build
 ARG TARGETOS
 ARG TARGETARCH
 WORKDIR /src
-# There is not a single dependency, so there is no layer for downloading them either.
+# The modules come down in a layer of their own, keyed only on go.mod and go.sum:
+# an edit to the server's code rebuilds the binary without fetching them again.
+# go.sum pins every one of them, so a module that changed upstream fails the
+# build instead of slipping in.
+COPY server/go.mod server/go.sum ./
+RUN go mod download && go mod verify
 COPY server/ ./
 # Declared as late as it can be, just above the one step that reads it: a new
 # version has to rebuild the binary and nothing before it. Unset, the image says

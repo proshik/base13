@@ -6,8 +6,9 @@ GODOT="${GODOT:-/Applications/Godot.app/Contents/MacOS/Godot}"
 (cd tools && python3 gen_sprites.py --check)
 (cd tools && python3 gen_sounds.py --check)
 
-# The relay server: its own tests, in the same run. A local toolchain and no
-# network — the build must not depend on somebody else's servers.
+# The relay server: its own tests, in the same run. A local toolchain — the
+# build must not fetch a compiler from somebody else's servers. The modules are
+# fetched once, checked against go.sum, and come from the module cache after.
 if command -v go >/dev/null 2>&1; then
   ./tools/check_server_neutral.sh
   (cd server && GOTOOLCHAIN=local GOFLAGS=-mod=mod go test -timeout 90s ./...)

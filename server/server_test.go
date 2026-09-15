@@ -22,7 +22,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -1352,14 +1351,15 @@ func TestSeatingsAreCountedByActionAndPlatform(t *testing.T) {
 	// that appears only when first counted breaks rate() across that moment.
 	first := renderMetrics(s)
 	checkExposition(t, first)
+	firstValues := seriesValues(t, first)
 	for _, platform := range testPlatforms {
 		for _, action := range actions {
-			if got, found := seriesValue(first, seatings(action, platform)); !found || got != "0" {
-				t.Errorf("before anyone sat down %s is %q (found %v)", seatings(action, platform), got, found)
+			if got, found := firstValues[seatings(action, platform)]; !found || got != 0 {
+				t.Errorf("before anyone sat down %s is %v (found %v)", seatings(action, platform), got, found)
 			}
 		}
-		if got, found := seriesValue(first, players(platform)); !found || got != "0" {
-			t.Errorf("before anyone sat down %s is %q (found %v)", players(platform), got, found)
+		if got, found := firstValues[players(platform)]; !found || got != 0 {
+			t.Errorf("before anyone sat down %s is %v (found %v)", players(platform), got, found)
 		}
 	}
 
@@ -1559,12 +1559,12 @@ func TestASeatingIsCountedOnlyOnceTheWelcomeWentOut(t *testing.T) {
 	if got := room.Occupants(); got != 1 {
 		t.Errorf("%d in the room after two failed greetings, expected the host alone", got)
 	}
-	text := renderMetrics(s)
+	values := seriesValues(t, renderMetrics(s))
 	for _, action := range []string{"create", "join", "quick", "return"} {
 		for _, platform := range testPlatforms {
 			series := `relay_seatings_total{action="` + action + `",platform="` + platform + `"}`
-			if got, _ := seriesValue(text, series); got != "0" {
-				t.Errorf("%s is %s after two greetings that never went out", series, got)
+			if got, found := values[series]; !found || got != 0 {
+				t.Errorf("%s is %v (found %v) after two greetings that never went out", series, got, found)
 			}
 		}
 	}
@@ -1870,8 +1870,8 @@ func TestPageLoadsAndWasmDownloadsAreCounted(t *testing.T) {
 	want := allResponses()
 	expectSeries(t, s, want)
 	rendered := 0
-	for _, line := range strings.Split(renderMetrics(s), "\n") {
-		if strings.HasPrefix(line, "relay_http_responses_total{") {
+	for series := range seriesValues(t, renderMetrics(s)) {
+		if strings.HasPrefix(series, "relay_http_responses_total{") {
 			rendered++
 		}
 	}
@@ -1924,9 +1924,9 @@ func TestPageLoadsAndWasmDownloadsAreCounted(t *testing.T) {
 	// Counted as each handler returns, which a client that already has the
 	// last byte may see a moment before.
 	eventually(t, func() bool {
-		text := renderMetrics(s)
+		values := seriesValues(t, renderMetrics(s))
 		for series, value := range want {
-			if raw, found := seriesValue(text, series); !found || raw != strconv.FormatFloat(value, 'f', -1, 64) {
+			if got, found := values[series]; !found || got != value {
 				return false
 			}
 		}

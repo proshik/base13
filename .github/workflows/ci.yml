@@ -36,9 +36,10 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version: '1.26'
-          # No dependency cache is needed: there are zero of them, and the project has
-          # no go.sum.
-          cache: false
+          # The server's modules are cached between runs, keyed on its go.sum, which
+          # lives in server/ rather than at the root where setup-go looks by default.
+          cache: true
+          cache-dependency-path: server/go.sum
 
       - name: Godot from cache
         id: godot-cache

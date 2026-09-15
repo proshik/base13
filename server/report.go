@@ -20,8 +20,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"strconv"
-	"sync/atomic"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 // A player's side reports once every three hundred ticks, which is five seconds
@@ -143,7 +144,7 @@ type reportGate struct {
 // Nothing here writes to the log. A report's content belongs to a stranger, and
 // a rejection is a count, not a line.
 func (s *server) takeReport(gate *reportGate, member *Member, room *Room, data []byte, now time.Time) {
-	counted := &s.hub.stats
+	counted := s.hub.stats
 	kind, p := readReport(data)
 	switch kind {
 	case desyncReport:
@@ -167,14 +168,13 @@ func (s *server) takeReport(gate *reportGate, member *Member, room *Room, data [
 	}
 }
 
-// clientReports is what players' reports add up to. The hub's stats hold it by
-// value, so it counts from zero with nothing to set up.
+// clientReports is what players' reports add up to.
 type clientReports struct {
-	speed    histogramVec // over platformLabels, speedBuckets
+	speed    histogramVec // over platformLabels
 	windows  counterVec   // over windowLabels
-	delay    histogram    // over inputDelayBuckets
-	waits    atomic.Uint64
-	fps      histogramVec // over platformLabels, fpsBuckets
+	delay    prometheus.Histogram
+	waits    prometheus.Counter
+	fps      histogramVec // over platformLabels
 	desynced counterVec   // over roomKindLabels
 	rejected counterVec   // over rejectionLabels
 }
@@ -190,21 +190,56 @@ var windowLabels = labelSet{
 // the two shapes.
 var rejectionLabels = labelSet{{"why", []string{"early", "malformed"}}}
 
-// A window's speed as a share of full speed, recorded in whole percent. Half
-// speed is a game that is plainly broken. The smooth line is at 0.95. The last
-// two bounds sit just below and just above full speed, so a game keeping pace
-// gets a bucket of its own. Recorded as whole percent over a hundred, 95 and 99
-// land exactly on their bounds.
-var speedBuckets = scaledBuckets(100, 0.5, 0.75, 0.9, 0.95, 0.99, 1.01)
+// A window's speed as a share of full speed. Half speed is a game that is
+// plainly broken. The smooth line is at 0.95. The last two bounds sit just
+// below and just above full speed, so a game keeping pace gets a bucket of its
+// own. A report's whole percent over a hundred is the same double as the
+// bound's own literal, so 95 and 99 land exactly on their bounds.
+var speedBuckets = []float64{0.5, 0.75, 0.9, 0.95, 0.99, 1.01}
 
-// Input delay in ticks, from the few a quiet link needs to the sixteen a
-// ragged one is raised to.
-var inputDelayBuckets = countBuckets(3, 4, 6, 8, 10, 12, 16)
+// Input delay in ticks, from the five the game starts at to the sixteen a
+// ragged link raises it to.
+var inputDelayBuckets = []float64{5, 6, 8, 10, 12, 14, 16}
 
 // Frames a second, from a slide show to a fast display. 55 and 60 sit close
 // together so that a display that just misses sixty is told apart from one
 // that keeps it.
-var fpsBuckets = countBuckets(15, 30, 45, 55, 60, 120)
+var fpsBuckets = []float64{15, 30, 45, 55, 60, 120}
+
+// newClientReports builds the families players' reports are counted into.
+func newClientReports(f families) clientReports {
+	return clientReports{
+		speed: f.histogramVec("relay_client_speed_ratio",
+			"How fast a player's game ran over a window of ticks, as a share of full speed, as the player's side "+
+				"reported it, by the platform their hello named. Self-reported and clamped to 0..2; "+
+				"only network games played through this server report.",
+			platformLabels, speedBuckets),
+		windows: f.counterVec("relay_client_windows_total",
+			"Windows of ticks players reported, by platform and by what the window was lost to: "+
+				"smooth at 95% of full speed or more; below that network if the game waited for the partner's input, "+
+				"machine if it never did.",
+			windowLabels),
+		delay: f.histogram("relay_client_input_delay_ticks",
+			"The input delay a player's game ran at, in ticks, observed once for every reported window. "+
+				"Self-reported and clamped to 0..64.",
+			inputDelayBuckets),
+		waits: f.counter("relay_client_waits_total",
+			"Times players' games stopped to wait for the partner's input, summed over reported windows; "+
+				"each window clamped to 300."),
+		fps: f.histogramVec("relay_client_fps",
+			"Frames a second a player's side drew over a reported window, by the platform their hello named. "+
+				"Self-reported and clamped to 0..1000.",
+			platformLabels, fpsBuckets),
+		desynced: f.counterVec("relay_desynced_matches_total",
+			"Rooms whose two players' worlds parted, as a player reported it; counted once a room, "+
+				"however many of its players report it.",
+			roomKindLabels),
+		rejected: f.counterVec("relay_client_reports_rejected_total",
+			"Reports from players that were dropped: early when a connection sent one sooner than the interval "+
+				"allows, or reported a desync twice; malformed when it was neither of the two shapes.",
+			rejectionLabels),
+	}
+}
 
 // paced counts one pace report that was taken. Its figures are already
 // clamped.
@@ -214,11 +249,11 @@ func (s *stats) paced(platform string, p pace) {
 	}
 	platform = platformLabel(platform)
 	r := &s.reports
-	r.speed.at(platformLabels, platform).observe(speedBuckets, uint64(p.Speed))
-	r.windows.inc(windowLabels, platform, verdict(p.Speed, p.Waits))
-	r.delay.observe(inputDelayBuckets, uint64(p.Delay))
-	r.waits.Add(uint64(p.Waits))
-	r.fps.at(platformLabels, platform).observe(fpsBuckets, uint64(p.FPS))
+	r.speed.observe(float64(p.Speed)/100, platform)
+	r.windows.inc(platform, verdict(p.Speed, p.Waits))
+	r.delay.Observe(float64(p.Delay))
+	r.waits.Add(float64(p.Waits))
+	r.fps.observe(float64(p.FPS), platform)
 }
 
 // matchDesynced counts one room whose two worlds parted, under its kind.
@@ -226,7 +261,7 @@ func (s *stats) matchDesynced(kind string) {
 	if s == nil {
 		return
 	}
-	s.reports.desynced.inc(roomKindLabels, kind)
+	s.reports.desynced.inc(kind)
 }
 
 // reportRejected counts one dropped report, under a reason from
@@ -235,40 +270,5 @@ func (s *stats) reportRejected(why string) {
 	if s == nil {
 		return
 	}
-	s.reports.rejected.inc(rejectionLabels, why)
-}
-
-// writeReportFamilies renders what players' reports add up to, every series
-// from zero.
-func writeReportFamilies(e *exposition, r *clientReports) {
-	e.histogramVec("relay_client_speed_ratio",
-		"How fast a player's game ran over a window of ticks, as a share of full speed, as the player's side "+
-			"reported it, by the platform their hello named. Self-reported and clamped to 0..2; "+
-			"only network games played through this server report.",
-		platformLabels, speedBuckets, &r.speed)
-	e.counterVec("relay_client_windows_total",
-		"Windows of ticks players reported, by platform and by what the window was lost to: "+
-			"smooth at 95% of full speed or more; below that network if the game waited for the partner's input, "+
-			"machine if it never did.",
-		windowLabels, &r.windows)
-	e.histogram("relay_client_input_delay_ticks",
-		"The input delay a player's game ran at, in ticks, observed once for every reported window. "+
-			"Self-reported and clamped to 0..64.",
-		inputDelayBuckets, &r.delay)
-	e.counter("relay_client_waits_total",
-		"Times players' games stopped to wait for the partner's input, summed over reported windows; "+
-			"each window clamped to 300.",
-		r.waits.Load())
-	e.histogramVec("relay_client_fps",
-		"Frames a second a player's side drew over a reported window, by the platform their hello named. "+
-			"Self-reported and clamped to 0..1000.",
-		platformLabels, fpsBuckets, &r.fps)
-	e.counterVec("relay_desynced_matches_total",
-		"Rooms whose two players' worlds parted, as a player reported it; counted once a room, "+
-			"however many of its players report it.",
-		roomKindLabels, &r.desynced)
-	e.counterVec("relay_client_reports_rejected_total",
-		"Reports from players that were dropped: early when a connection sent one sooner than the interval "+
-			"allows, or reported a desync twice; malformed when it was neither of the two shapes.",
-		rejectionLabels, &r.rejected)
+	s.reports.rejected.inc(why)
 }

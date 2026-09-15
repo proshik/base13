@@ -557,30 +557,30 @@ func TestSeatedMembersCarryTheirClientAndTheHubsStats(t *testing.T) {
 	// write.
 	hub := NewHub()
 	room, _ := hub.Create("tanks", 1)
-	if room.stats != &hub.stats {
+	if room.stats != hub.stats {
 		t.Fatal("a room opened by the hub does not count into the hub")
 	}
 	member, err := room.JoinAs(client{platform: "ios", version: "0.5.0"})
 	if err != nil {
 		t.Fatalf("not seated: %v", err)
 	}
-	if member.client != (client{platform: "ios", version: "0.5.0"}) || member.stats != &hub.stats {
+	if member.client != (client{platform: "ios", version: "0.5.0"}) || member.stats != hub.stats {
 		t.Fatalf("the member carries %+v and stats %p, expected ios 0.5.0 and %p",
-			member.client, member.stats, &hub.stats)
+			member.client, member.stats, hub.stats)
 	}
 	// The plain Join is a member that said nothing about itself.
 	plain, _ := room.Join()
-	if plain.client != (client{}) || plain.stats != &hub.stats {
+	if plain.client != (client{}) || plain.stats != hub.stats {
 		t.Fatalf("a plain Join carries %+v and stats %p", plain.client, plain.stats)
 	}
 
 	waiting, waiter, _ := hub.QuickAs("tanks", 2, client{platform: "web", version: "0.4.0"})
 	matched, partner, _ := hub.QuickAs("tanks", 3, client{platform: "android", version: "0.5.0"})
-	if waiting != matched || waiting.stats != &hub.stats {
+	if waiting != matched || waiting.stats != hub.stats {
 		t.Fatal("the quick game did not seat both in one room of this hub")
 	}
 	if waiter.client.platform != "web" || partner.client.platform != "android" ||
-		waiter.stats != &hub.stats || partner.stats != &hub.stats {
+		waiter.stats != hub.stats || partner.stats != hub.stats {
 		t.Fatalf("quick members carry %+v and %+v", waiter.client, partner.client)
 	}
 	if _, plainQuick, _ := hub.Quick("tanks", 4); plainQuick.client != (client{}) {

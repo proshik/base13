@@ -1,9 +1,7 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -19,58 +17,171 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus/testutil"
+	dto "github.com/prometheus/client_model/go"
+	"github.com/prometheus/common/expfmt"
+	"github.com/prometheus/common/model"
 )
 
-// A render is checked the way Prometheus reads it, not against a string we
-// happen to expect: a malformed line is never an error the server sees — the
+// A scrape is checked the way Prometheus reads it: taken through the real
+// handler and read by Prometheus's own parser, not matched against a string we
+// happen to expect. A malformed line is never an error the server sees — the
 // scrape fails on the other side, and the dashboard quietly goes blank.
 
-// renderMetrics returns what a scrape of s would receive.
+// renderMetrics returns what a scrape of s receives: the body the metrics
+// handler writes for a scraper that asks for no format in particular, which is
+// the text format.
 func renderMetrics(s *server) string {
-	var out bytes.Buffer
-	s.writeMetrics(&out)
-	return out.String()
+	recorder := httptest.NewRecorder()
+	s.metricsHandler("").ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	return recorder.Body.String()
 }
 
-// metricValue finds one exact series in a fresh render and returns its value.
-// The series is written as it is rendered: a bare name such as
-// relay_connections, or a name with its labels sorted by label name, `le`
-// last, such as relay_refusals_total{reason="full"}.
+// sample is one line of a scrape: a counter or a gauge is one, a histogram is
+// one per bucket plus its _sum and _count.
+type sample struct {
+	name   string           // with _bucket, _sum or _count where the line has it
+	series string           // the name and labels, written the way the tests write a series
+	labels []*dto.LabelPair // le and quantile among them, where the line has one
+	value  float64
+}
+
+// parseScrape reads a scrape with Prometheus's own text parser and lays every
+// family out as the lines it came from. A series written as the tests write it
+// is a bare name such as relay_connections, or a name with its labels sorted by
+// label name and le or quantile last, such as
+// relay_pairing_wait_seconds_bucket{kind="code",outcome="paired",le="10"}.
+//
+// The parser takes a series written twice without complaint, and a scrape
+// carrying one is ambiguous to whatever reads it, so that is refused here.
+func parseScrape(text string) ([]sample, error) {
+	parser := expfmt.NewTextParser(model.LegacyValidation)
+	families, err := parser.TextToMetricFamilies(strings.NewReader(text))
+	if err != nil {
+		return nil, fmt.Errorf("prometheus cannot parse the scrape: %w", err)
+	}
+	var samples []sample
+	seen := map[string]bool{}
+	add := func(name string, labels []*dto.LabelPair, bound *dto.LabelPair, value float64) error {
+		sorted := slices.Clone(labels)
+		slices.SortFunc(sorted, func(a, b *dto.LabelPair) int { return strings.Compare(a.GetName(), b.GetName()) })
+		if bound != nil {
+			sorted = append(sorted, bound)
+		}
+		parts := make([]string, len(sorted))
+		for i, l := range sorted {
+			parts[i] = l.GetName() + `="` + l.GetValue() + `"`
+		}
+		series := name
+		if len(parts) > 0 {
+			series += "{" + strings.Join(parts, ",") + "}"
+		}
+		if seen[series] {
+			return fmt.Errorf("series %s is in the scrape twice", series)
+		}
+		seen[series] = true
+		samples = append(samples, sample{name: name, series: series, labels: sorted, value: value})
+		return nil
+	}
+	pair := func(name string, value float64) *dto.LabelPair {
+		text := "+Inf"
+		if !math.IsInf(value, 1) {
+			text = strconv.FormatFloat(value, 'f', -1, 64)
+		}
+		return &dto.LabelPair{Name: &name, Value: &text}
+	}
+
+	for _, name := range slices.Sorted(maps.Keys(families)) {
+		family := families[name]
+		for _, m := range family.GetMetric() {
+			var errs []error
+			switch family.GetType() {
+			case dto.MetricType_COUNTER:
+				errs = append(errs, add(name, m.GetLabel(), nil, m.GetCounter().GetValue()))
+			case dto.MetricType_GAUGE:
+				errs = append(errs, add(name, m.GetLabel(), nil, m.GetGauge().GetValue()))
+			case dto.MetricType_UNTYPED:
+				errs = append(errs, add(name, m.GetLabel(), nil, m.GetUntyped().GetValue()))
+			case dto.MetricType_SUMMARY:
+				summary := m.GetSummary()
+				for _, q := range summary.GetQuantile() {
+					errs = append(errs, add(name, m.GetLabel(), pair("quantile", q.GetQuantile()), q.GetValue()))
+				}
+				errs = append(errs,
+					add(name+"_sum", m.GetLabel(), nil, summary.GetSampleSum()),
+					add(name+"_count", m.GetLabel(), nil, float64(summary.GetSampleCount())))
+			case dto.MetricType_HISTOGRAM:
+				histogram := m.GetHistogram()
+				count := float64(histogram.GetSampleCount()) + histogram.GetSampleCountFloat()
+				infinite := false
+				for _, b := range histogram.GetBucket() {
+					infinite = infinite || math.IsInf(b.GetUpperBound(), 1)
+					cumulative := float64(b.GetCumulativeCount()) + b.GetCumulativeCountFloat()
+					errs = append(errs, add(name+"_bucket", m.GetLabel(), pair("le", b.GetUpperBound()), cumulative))
+				}
+				if !infinite {
+					errs = append(errs, add(name+"_bucket", m.GetLabel(), pair("le", math.Inf(1)), count))
+				}
+				errs = append(errs,
+					add(name+"_sum", m.GetLabel(), nil, histogram.GetSampleSum()),
+					add(name+"_count", m.GetLabel(), nil, count))
+			default:
+				return nil, fmt.Errorf("%s has type %s, which the server never exposes", name, family.GetType())
+			}
+			for _, err := range errs {
+				if err != nil {
+					return nil, err
+				}
+			}
+		}
+	}
+	return samples, nil
+}
+
+// seriesValues is every series of a scrape by the way the tests write one. A
+// scrape Prometheus would refuse fails the test.
+func seriesValues(t *testing.T, text string) map[string]float64 {
+	t.Helper()
+	samples, err := parseScrape(text)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, text)
+	}
+	values := make(map[string]float64, len(samples))
+	for _, s := range samples {
+		values[s.series] = s.value
+	}
+	return values
+}
+
+// metricValue finds one exact series in a fresh scrape and returns its value.
 func metricValue(t *testing.T, s *server, series string) float64 {
 	t.Helper()
 	text := renderMetrics(s)
-	raw, found := seriesValue(text, series)
+	value, found := seriesValues(t, text)[series]
 	if !found {
-		t.Fatalf("no series %s in the render:\n%s", series, text)
-	}
-	value, err := strconv.ParseFloat(raw, 64)
-	if err != nil {
-		t.Fatalf("series %s has a value that is not a number: %q", series, raw)
+		t.Fatalf("no series %s in the scrape:\n%s", series, text)
 	}
 	return value
 }
 
-// seriesValue returns the raw value of one exact series in a render.
-func seriesValue(text, series string) (string, bool) {
-	for _, line := range strings.Split(text, "\n") {
-		if value, found := strings.CutPrefix(line, series+" "); found {
-			return value, true
-		}
+// familyNames returns the name of every family in a scrape, in order. Two
+// scrapes with the same families agree on shape even when the live figures
+// inside them do not agree on value.
+func familyNames(t *testing.T, text string) []string {
+	t.Helper()
+	samples, err := parseScrape(text)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, text)
 	}
-	return "", false
-}
-
-// familyNames returns every family's name, in the order it appears. A TYPE
-// line opens a family exactly once, so this also serves as a structural
-// fingerprint of a render: two renders with the same families in the same
-// order agree on shape even when live figures inside them do not agree on
-// value.
-func familyNames(text string) []string {
 	var names []string
-	for _, line := range strings.Split(text, "\n") {
-		if rest, ok := strings.CutPrefix(line, "# TYPE "); ok {
-			name, _, _ := strings.Cut(rest, " ")
-			names = append(names, name)
+	for _, s := range samples {
+		family := s.name
+		for _, suffix := range []string{"_bucket", "_sum", "_count"} {
+			family = strings.TrimSuffix(family, suffix)
+		}
+		if len(names) == 0 || names[len(names)-1] != family {
+			names = append(names, family)
 		}
 	}
 	return names
@@ -89,448 +200,97 @@ func eventually(t *testing.T, cond func() bool) {
 	}
 }
 
-// checkExposition fails the test on anything in a render that Prometheus would
-// refuse or misread. Any test may hand it any render.
+// Only what the server's closed sets are made of. A room code is uppercase, so
+// it cannot pass as a label value even by accident.
+var expositionLabelValue = regexp.MustCompile(`^[a-z0-9_.]+$`)
+
+// expositionProblem says what is wrong with a scrape, if anything: a scrape
+// Prometheus would refuse, or a label value outside the closed sets'
+// characters. le and quantile are exempt: they are bounds the client library
+// writes, and +Inf is one of them.
+func expositionProblem(text string) error {
+	samples, err := parseScrape(text)
+	if err != nil {
+		return err
+	}
+	for _, s := range samples {
+		for _, l := range s.labels {
+			if l.GetName() == "le" || l.GetName() == "quantile" {
+				continue
+			}
+			if !expositionLabelValue.MatchString(l.GetValue()) {
+				return fmt.Errorf("%s: label %s=%q is outside [a-z0-9_.]", s.series, l.GetName(), l.GetValue())
+			}
+		}
+	}
+	return nil
+}
+
+// checkExposition fails the test on anything in a scrape that Prometheus would
+// refuse or misread, or that no label of the server's may carry. Any test may
+// hand it any scrape.
 func checkExposition(t *testing.T, text string) {
 	t.Helper()
-	for _, problem := range expositionProblems(text) {
-		t.Error(problem)
+	if err := expositionProblem(text); err != nil {
+		t.Errorf("%v\n%s", err, text)
 	}
-}
-
-var (
-	expositionMetricName = regexp.MustCompile(`^[a-zA-Z_:][a-zA-Z0-9_:]*$`)
-	expositionLabelName  = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
-	// Only what the server's closed sets are made of. A room code is
-	// uppercase, so it cannot pass as a label value even by accident.
-	expositionLabelValue = regexp.MustCompile(`^[a-z0-9_.]+$`)
-)
-
-type parsedSample struct {
-	name   string
-	labels []label
-	value  float64
-}
-
-// parseSample reads one sample line: a name, labels in braces with the
-// format's three escapes, a space and a value. The server never writes a
-// timestamp, so one is refused.
-func parseSample(line string) (parsedSample, error) {
-	var sample parsedSample
-	end := strings.IndexAny(line, "{ ")
-	if end < 0 {
-		return sample, errors.New("no value")
-	}
-	sample.name, line = line[:end], line[end:]
-	if !expositionMetricName.MatchString(sample.name) {
-		return sample, fmt.Errorf("bad metric name %q", sample.name)
-	}
-	if line[0] == '{' {
-		line = line[1:]
-		for !strings.HasPrefix(line, "}") {
-			name, rest, found := strings.Cut(line, "=")
-			if !found || !strings.HasPrefix(rest, `"`) {
-				return sample, errors.New("a label without a quoted value")
-			}
-			var value strings.Builder
-			closed := false
-			i := 1
-			for ; i < len(rest); i++ {
-				c := rest[i]
-				if c == '"' {
-					closed = true
-					break
-				}
-				if c != '\\' {
-					value.WriteByte(c)
-					continue
-				}
-				if i+1 == len(rest) {
-					return sample, errors.New("an escape at the end of the line")
-				}
-				i++
-				switch rest[i] {
-				case '\\':
-					value.WriteByte('\\')
-				case '"':
-					value.WriteByte('"')
-				case 'n':
-					value.WriteByte('\n')
-				default:
-					return sample, fmt.Errorf("unknown escape \\%c", rest[i])
-				}
-			}
-			if !closed {
-				return sample, errors.New("a label value is never closed")
-			}
-			sample.labels = append(sample.labels, label{name, value.String()})
-			line = rest[i+1:]
-			if strings.HasPrefix(line, ",") {
-				line = line[1:]
-				if strings.HasPrefix(line, "}") {
-					return sample, errors.New("a trailing comma in labels")
-				}
-			} else if !strings.HasPrefix(line, "}") {
-				return sample, errors.New("labels are not separated by commas")
-			}
-		}
-		line = line[1:]
-	}
-	raw, found := strings.CutPrefix(line, " ")
-	if !found || raw == "" || strings.Contains(raw, " ") {
-		return sample, errors.New("not exactly one value after the name")
-	}
-	value, err := strconv.ParseFloat(raw, 64)
-	if err != nil {
-		return sample, fmt.Errorf("value %q is not a number", raw)
-	}
-	sample.value = value
-	return sample, nil
-}
-
-// seriesKey names a series with its labels in a fixed order, so that the same
-// series written with its labels in another order is still recognized.
-func seriesKey(name string, labels []label) string {
-	sorted := slices.Clone(labels)
-	slices.SortFunc(sorted, func(a, b label) int { return strings.Compare(a.name, b.name) })
-	parts := make([]string, len(sorted))
-	for i, l := range sorted {
-		parts[i] = l.name + "=" + strconv.Quote(l.value)
-	}
-	return name + "{" + strings.Join(parts, ",") + "}"
-}
-
-// expositionProblems lists everything wrong with a render. Kept apart from
-// checkExposition so the checker itself can be shown to catch what it claims.
-func expositionProblems(text string) []string {
-	var problems []string
-	fail := func(format string, args ...any) {
-		problems = append(problems, fmt.Sprintf(format, args...))
-	}
-	if !strings.HasSuffix(text, "\n") {
-		fail("the render does not end in a newline")
-	}
-
-	type histogramSeries struct {
-		bounds, counts   []float64
-		count            float64
-		hasSum, hasCount bool
-	}
-	var (
-		kinds      = map[string]string{}
-		helped     = map[string]bool{}
-		sampled    = map[string]bool{}
-		finished   = map[string]bool{}
-		seen       = map[string]bool{}
-		histograms = map[string]*histogramSeries{}
-		families   []string
-		order      []string
-		current    string
-	)
-	// Every line of a family comes together: HELP, TYPE, then its samples.
-	enter := func(n int, family string) {
-		if family == current {
-			return
-		}
-		if finished[family] {
-			fail("line %d: %s continues after another family began", n, family)
-		}
-		if current != "" {
-			finished[current] = true
-		}
-		current = family
-	}
-
-	for i, line := range strings.Split(strings.TrimSuffix(text, "\n"), "\n") {
-		n := i + 1
-		switch {
-		case line == "":
-			fail("line %d is empty", n)
-
-		case strings.HasPrefix(line, "# HELP "):
-			name, _, _ := strings.Cut(line[len("# HELP "):], " ")
-			enter(n, name)
-			if helped[name] {
-				fail("line %d: a second HELP for %s", n, name)
-			}
-			if sampled[name] {
-				fail("line %d: HELP for %s comes after its samples", n, name)
-			}
-			helped[name] = true
-
-		case strings.HasPrefix(line, "# TYPE "):
-			name, kind, _ := strings.Cut(line[len("# TYPE "):], " ")
-			if !expositionMetricName.MatchString(name) {
-				fail("line %d: bad family name %q", n, name)
-			}
-			enter(n, name)
-			if _, twice := kinds[name]; twice {
-				fail("line %d: %s is declared twice", n, name)
-				continue
-			}
-			if !helped[name] {
-				fail("line %d: %s has no HELP before its TYPE", n, name)
-			}
-			switch kind {
-			case "counter":
-				if !strings.HasSuffix(name, "_total") {
-					fail("line %d: counter %s does not end in _total", n, name)
-				}
-			case "gauge", "histogram":
-				if strings.HasSuffix(name, "_total") {
-					fail("line %d: %s %s ends in _total, which promises a counter", n, kind, name)
-				}
-			default:
-				fail("line %d: %s has type %q, which the server never renders", n, name, kind)
-			}
-			kinds[name] = kind
-			families = append(families, name)
-
-		case strings.HasPrefix(line, "#"):
-			fail("line %d: a comment that is neither HELP nor TYPE", n)
-
-		default:
-			sample, err := parseSample(line)
-			if err != nil {
-				fail("line %d: %v: %q", n, err, line)
-				continue
-			}
-			family, suffix := sample.name, ""
-			for _, s := range []string{"_bucket", "_sum", "_count"} {
-				if base, ok := strings.CutSuffix(sample.name, s); ok && kinds[base] == "histogram" {
-					family, suffix = base, s
-					break
-				}
-			}
-			enter(n, family)
-			kind, typed := kinds[family]
-			if !typed {
-				fail("line %d: %s has no TYPE before it", n, sample.name)
-				continue
-			}
-			sampled[family] = true
-
-			names := map[string]bool{}
-			var rest []label
-			le, hasLe := "", false
-			for _, l := range sample.labels {
-				if !expositionLabelName.MatchString(l.name) || strings.HasPrefix(l.name, "__") {
-					fail("line %d: bad label name %q", n, l.name)
-				}
-				if names[l.name] {
-					fail("line %d: label %s given twice", n, l.name)
-				}
-				names[l.name] = true
-				if l.name == "le" {
-					le, hasLe = l.value, true
-					if suffix != "_bucket" {
-						fail("line %d: le on %s, which is not a histogram bucket", n, sample.name)
-					}
-					if l.value == "+Inf" {
-						continue
-					}
-				} else {
-					rest = append(rest, l)
-				}
-				if !expositionLabelValue.MatchString(l.value) {
-					fail("line %d: label %s=%q is outside [a-z0-9_.]", n, l.name, l.value)
-				}
-			}
-
-			key := seriesKey(sample.name, sample.labels)
-			if seen[key] {
-				fail("line %d: series %s is rendered twice", n, key)
-			}
-			seen[key] = true
-
-			if kind == "counter" && !(sample.value >= 0) {
-				fail("line %d: counter %s is %v", n, key, sample.value)
-			}
-			if kind != "histogram" {
-				continue
-			}
-			if suffix == "" {
-				fail("line %d: histogram %s has a sample that is not a bucket, sum or count", n, family)
-				continue
-			}
-			id := seriesKey(family, rest)
-			h := histograms[id]
-			if h == nil {
-				h = &histogramSeries{}
-				histograms[id] = h
-				order = append(order, id)
-			}
-			switch suffix {
-			case "_bucket":
-				if !hasLe {
-					fail("line %d: a bucket of %s without le", n, id)
-					continue
-				}
-				bound, err := strconv.ParseFloat(le, 64)
-				if err != nil {
-					fail("line %d: le %q is not a number", n, le)
-					continue
-				}
-				h.bounds = append(h.bounds, bound)
-				h.counts = append(h.counts, sample.value)
-			case "_sum":
-				h.hasSum = true
-			case "_count":
-				h.count, h.hasCount = sample.value, true
-			}
-		}
-	}
-
-	for _, family := range families {
-		if !sampled[family] {
-			fail("%s is declared but has no samples", family)
-		}
-	}
-	for _, id := range order {
-		h := histograms[id]
-		if !h.hasSum {
-			fail("%s has no _sum", id)
-		}
-		if !h.hasCount {
-			fail("%s has no _count", id)
-		}
-		if len(h.bounds) == 0 {
-			fail("%s has no buckets", id)
-			continue
-		}
-		for i := 1; i < len(h.bounds); i++ {
-			if !(h.bounds[i] > h.bounds[i-1]) {
-				fail("%s: bucket bounds are not ascending: %v", id, h.bounds)
-				break
-			}
-		}
-		for i := 1; i < len(h.counts); i++ {
-			if h.counts[i] < h.counts[i-1] {
-				fail("%s: buckets are not cumulative: %v", id, h.counts)
-				break
-			}
-		}
-		last := len(h.bounds) - 1
-		if !math.IsInf(h.bounds[last], 1) {
-			fail("%s has no +Inf bucket as its last", id)
-		} else if h.hasCount && h.counts[last] != h.count {
-			fail("%s: the +Inf bucket holds %v but _count is %v", id, h.counts[last], h.count)
-		}
-	}
-	return problems
 }
 
 func TestExpositionIsWellFormed(t *testing.T) {
-	// Prometheus refuses a whole scrape for one bad line, so every render must
+	// Prometheus refuses a whole scrape for one bad line, so every scrape must
 	// hold the format — and no label may carry anything but the server's own
 	// closed values.
 	s := &server{hub: NewHub()}
-	rendered := renderMetrics(s)
-	checkExposition(t, rendered)
-	// Since process.go, a render is no longer byte-identical from one scrape
-	// to the next: the scheduler and the garbage collector do not pause for a
-	// scrape, so relay_goroutines, the runtime memory figures and the two
-	// rebucketed histograms are free to move even though nothing the server
-	// itself tracks has changed. What must still hold: the same families in
-	// the same order — nothing appears or disappears between two scrapes of
-	// an idle server — and the server's own numbers, as opposed to the
-	// machine's, stay exactly put.
-	again := renderMetrics(s)
-	checkExposition(t, again)
-	if before, after := familyNames(rendered), familyNames(again); !slices.Equal(before, after) {
-		t.Errorf("families differ between two renders:\n%v\n---\n%v", before, after)
-	}
-	for _, series := range []string{
-		"relay_connections", "relay_connections_limit", "relay_rooms_limit",
-		"relay_start_time_seconds",
-		`relay_build_info{goversion="` + goVersionLabel(runtime.Version()) + `",version="dev"}`,
-	} {
-		first, foundFirst := seriesValue(rendered, series)
-		second, foundSecond := seriesValue(again, series)
-		if !foundFirst || !foundSecond || first != second {
-			t.Errorf("%s moved between two renders of the same state: %q (found %v), then %q (found %v)",
-				series, first, foundFirst, second, foundSecond)
+	// The client library's own linter, over each registry a scrape reads: the
+	// hub's, with the standard collectors on it, and the one holding what is
+	// read at the moment of the scrape.
+	for i, registry := range s.metricsGatherers() {
+		problems, err := testutil.GatherAndLint(registry)
+		if err != nil {
+			t.Fatalf("registry %d could not be gathered: %v", i, err)
+		}
+		for _, problem := range problems {
+			t.Errorf("registry %d: %s: %s", i, problem.Metric, problem.Text)
 		}
 	}
-
-	// The server renders no histogram yet, so one is built here: the histogram
-	// path has to be seen working before a real family relies on it.
-	shape := durationBuckets(0.01, 0.1, 1)
-	pairs := labelSet{
-		{"kind", []string{"code", "quick"}},
-		{"outcome", []string{"paired", "abandoned"}},
+	rendered := renderMetrics(s)
+	checkExposition(t, rendered)
+	// A scrape is not the same bytes from one to the next: the scheduler and the
+	// garbage collector do not pause for it, so the runtime's and the process's
+	// figures are free to move even though nothing the server itself tracks has
+	// changed. What must still hold: the same families — nothing appears or
+	// disappears between two scrapes of an idle server — and the server's own
+	// numbers, as opposed to the machine's, stay exactly put.
+	again := renderMetrics(s)
+	checkExposition(t, again)
+	if before, after := familyNames(t, rendered), familyNames(t, again); !slices.Equal(before, after) {
+		t.Errorf("families differ between two scrapes:\n%v\n---\n%v", before, after)
 	}
-	var opened atomic.Uint64
-	var outcomes counterVec
-	var wait histogram
-	var waits histogramVec
-	opened.Add(3)
-	outcomes.inc(pairs, "quick", "abandoned")
-	outcomes.add(pairs, 4, "code", "paired")
-	wait.observeDuration(shape, 50*time.Millisecond)
-	waits.at(pairs, "code", "paired").observeDuration(shape, 2*time.Second)
-	waits.at(pairs, "quick", "abandoned").observeDuration(shape, 5*time.Millisecond)
-	waits.at(pairs, "quick", "nobody").observeDuration(shape, time.Second)
-
-	var out bytes.Buffer
-	e := newExposition(&out)
-	e.counter("relay_example_opened_total", "An example counter.", opened.Load())
-	e.counterVec("relay_example_outcomes_total", "An example counter vector.", pairs, &outcomes)
-	e.gauge("relay_example_now", "An example gauge.", 2)
-	e.histogram("relay_example_wait_seconds", "An example histogram.", shape, &wait)
-	e.histogramVec("relay_example_waits_seconds", "An example histogram vector.", pairs, shape, &waits)
-	e.flush()
-	built := out.String()
-	checkExposition(t, built)
-
-	for _, c := range []struct {
-		series string
-		want   string
-	}{
-		{`relay_example_opened_total`, "3"},
-		{`relay_example_outcomes_total{kind="quick",outcome="abandoned"}`, "1"},
-		{`relay_example_outcomes_total{kind="code",outcome="paired"}`, "4"},
-		{`relay_example_outcomes_total{kind="code",outcome="abandoned"}`, "0"},
-		{`relay_example_now`, "2"},
-		{`relay_example_wait_seconds_bucket{le="0.01"}`, "0"},
-		{`relay_example_wait_seconds_bucket{le="0.1"}`, "1"},
-		{`relay_example_wait_seconds_bucket{le="+Inf"}`, "1"},
-		{`relay_example_wait_seconds_sum`, "0.05"},
-		{`relay_example_waits_seconds_bucket{kind="code",outcome="paired",le="1"}`, "0"},
-		{`relay_example_waits_seconds_bucket{kind="code",outcome="paired",le="+Inf"}`, "1"},
-		{`relay_example_waits_seconds_sum{kind="code",outcome="paired"}`, "2"},
-		{`relay_example_waits_seconds_count{kind="quick",outcome="abandoned"}`, "1"},
-		// A value outside the closed set is not counted anywhere.
-		{`relay_example_waits_seconds_count{kind="quick",outcome="paired"}`, "0"},
+	first, second := seriesValues(t, rendered), seriesValues(t, again)
+	for _, series := range []string{
+		"relay_connections", "relay_connections_limit", "relay_rooms_limit",
+		`relay_build_info{goversion="` + goVersionLabel(runtime.Version()) + `",version="dev"}`,
 	} {
-		if got, found := seriesValue(built, c.series); !found || got != c.want {
-			t.Errorf("%s is %q (found %v), expected %q", c.series, got, found, c.want)
+		before, foundBefore := first[series]
+		after, foundAfter := second[series]
+		if !foundBefore || !foundAfter || before != after {
+			t.Errorf("%s moved between two scrapes of the same state: %v (found %v), then %v (found %v)",
+				series, before, foundBefore, after, foundAfter)
 		}
 	}
 
 	// And the checker catches what it claims to: a checker that never refuses
-	// anything proves nothing about the renders it passes.
+	// anything proves nothing about the scrapes it passes.
 	const head = "# HELP relay_a A.\n# TYPE relay_a gauge\n"
-	const histogramHead = "# HELP relay_h H.\n# TYPE relay_h histogram\n"
 	for _, bad := range []struct{ why, text, mention string }{
-		{"a sample before its TYPE", "# HELP relay_a A.\nrelay_a 1\n# TYPE relay_a gauge\n", "no TYPE"},
-		{"a family without HELP", "# TYPE relay_a gauge\nrelay_a 1\n", "no HELP"},
-		{"a family declared twice", head + "relay_a 1\n# HELP relay_b B.\n# TYPE relay_b gauge\nrelay_b 1\n# TYPE relay_a gauge\n", "declared twice"},
-		{"a family split in two", head + "relay_a{k=\"x\"} 1\n# HELP relay_b B.\n# TYPE relay_b gauge\nrelay_b 1\nrelay_a{k=\"y\"} 1\n", "continues"},
-		{"a series rendered twice", head + "relay_a{k=\"x\",j=\"y\"} 1\nrelay_a{j=\"y\",k=\"x\"} 2\n", "rendered twice"},
-		{"a counter without _total", "# HELP relay_a A.\n# TYPE relay_a counter\nrelay_a 1\n", "_total"},
+		{"a line Prometheus cannot read", head + "relay_a{k=\"x\" 1\n", "cannot parse"},
+		{"a family declared twice", head + "relay_a 1\n# HELP relay_b B.\n# TYPE relay_b gauge\nrelay_b 1\n# TYPE relay_a gauge\n", "cannot parse"},
+		{"a series written twice", head + "relay_a{k=\"x\",j=\"y\"} 1\nrelay_a{j=\"y\",k=\"x\"} 2\n", "twice"},
 		{"a room code in a label", head + "relay_a{code=\"K7QX2M\"} 1\n", "outside"},
 		{"a label that is not a closed value", head + "relay_a{game=\"my game\"} 1\n", "outside"},
-		{"buckets that shrink", histogramHead + "relay_h_bucket{le=\"0.1\"} 2\nrelay_h_bucket{le=\"+Inf\"} 1\nrelay_h_sum 1\nrelay_h_count 1\n", "cumulative"},
-		{"+Inf apart from _count", histogramHead + "relay_h_bucket{le=\"0.1\"} 1\nrelay_h_bucket{le=\"+Inf\"} 2\nrelay_h_sum 1\nrelay_h_count 3\n", "_count is"},
-		{"a histogram without _sum", histogramHead + "relay_h_bucket{le=\"+Inf\"} 1\nrelay_h_count 1\n", "no _sum"},
-		{"a histogram without +Inf", histogramHead + "relay_h_bucket{le=\"0.1\"} 1\nrelay_h_sum 1\nrelay_h_count 1\n", "+Inf"},
-		{"a timestamp", head + "relay_a 1 1700000000000\n", "one value"},
-		{"no final newline", head + "relay_a 1", "newline"},
 	} {
-		problems := expositionProblems(bad.text)
-		if !strings.Contains(strings.Join(problems, "\n"), bad.mention) {
-			t.Errorf("the checker let %s through (problems: %q)", bad.why, problems)
+		if err := expositionProblem(bad.text); err == nil || !strings.Contains(err.Error(), bad.mention) {
+			t.Errorf("the checker let %s through (problem: %v)", bad.why, err)
 		}
 	}
 }
@@ -566,21 +326,88 @@ func TestExpositionReportsConnectionsAndLimits(t *testing.T) {
 	if got := metricValue(t, s, info); got != 1 {
 		t.Errorf("%s is %v, expected 1", info, got)
 	}
-	// The start is the process's own, taken once: a restart shows as a jump,
-	// and a scrape must not read as one.
-	started := metricValue(t, s, "relay_start_time_seconds")
+	// The start is the process's own, taken from the system: a restart shows
+	// as a jump, and a scrape must not read as one.
+	started := metricValue(t, s, "process_start_time_seconds")
 	if started <= 0 || started > float64(time.Now().Unix()+1) {
 		t.Errorf("start time %v is not a moment in the past", started)
 	}
-	if again := metricValue(t, s, "relay_start_time_seconds"); again != started {
+	if again := metricValue(t, s, "process_start_time_seconds"); again != started {
 		t.Errorf("start time moved between scrapes: %v, then %v", started, again)
+	}
+}
+
+func TestAValueOutsideAClosedSetCountsNowhere(t *testing.T) {
+	// The client library's vectors make a new series for any value they are
+	// handed. Every value the server counts under is folded into its closed set
+	// long before, but a slip that let one through must not become a series
+	// nobody declared: it counts nowhere, and the family keeps its shape.
+	s := &server{hub: NewHub()}
+	before := seriesValues(t, renderMetrics(s))
+	s.hub.stats.refused("made_up")
+	s.hub.stats.refusals.inc("full", "extra")
+	s.hub.stats.pairingWaits.observe(1, "quick", "nobody")
+	s.hub.stats.responded("favicon", http.StatusOK, false, time.Second)
+	after := seriesValues(t, renderMetrics(s))
+	for series, value := range after {
+		if !strings.HasPrefix(series, "relay_") || strings.HasPrefix(series, "relay_build_info") {
+			continue
+		}
+		if was, found := before[series]; !found || was != value {
+			t.Errorf("%s went from %v (found %v) to %v on values outside its set", series, was, found, value)
+		}
+	}
+	for series := range before {
+		if _, found := after[series]; !found {
+			t.Errorf("%s is gone from the scrape", series)
+		}
+	}
+}
+
+func TestStandardRuntimeAndProcessFiguresArePresent(t *testing.T) {
+	// The machine's side comes from the client library's standard collectors,
+	// under the names every Go dashboard reads. The runtime's figures are there
+	// on every platform; the process's open descriptors come from /proc, and
+	// Linux is where the image runs.
+	s := &server{hub: NewHub()}
+	values := seriesValues(t, renderMetrics(s))
+	want := []string{
+		"go_goroutines", "go_threads", "go_sched_latencies_seconds_count", "go_gc_pauses_seconds_count",
+		"process_cpu_seconds_total", "process_start_time_seconds",
+	}
+	if runtime.GOOS == "linux" {
+		want = append(want, "process_open_fds", "process_resident_memory_bytes")
+	}
+	for _, series := range want {
+		if _, found := values[series]; !found {
+			t.Errorf("no %s in the scrape on %s", series, runtime.GOOS)
+		}
+	}
+	if got := values["go_goroutines"]; got < 1 {
+		t.Errorf("go_goroutines is %v, expected at least this test's own goroutine", got)
+	}
+	if runtime.GOOS == "linux" && values["process_open_fds"] < 1 {
+		t.Errorf("process_open_fds is %v, expected at least the descriptors the test runs with", values["process_open_fds"])
+	}
+	// The figures the server once worked out itself are gone for good: two
+	// names for one number would split every dashboard between them.
+	for series := range values {
+		for _, gone := range []string{
+			"relay_goroutines", "relay_heap_live_bytes", "relay_runtime_memory_bytes", "relay_gc_cycles_total",
+			"relay_sched_latency_seconds", "relay_gc_pause_seconds", "relay_process_", "relay_start_time_seconds",
+		} {
+			if strings.HasPrefix(series, gone) {
+				t.Errorf("%s is still in the scrape", series)
+			}
+		}
 	}
 }
 
 func TestBuildVersionIsSanitized(t *testing.T) {
 	// The version is stamped at build time from whatever the release was given,
 	// and it becomes a label. A "v0.5.0" typed by hand, or a value with a quote
-	// in it, must not reach the render as it was typed.
+	// in it, must not reach the scrape as it was typed.
+	// Not parallel: it rewrites the package's version for its duration.
 	defer func(kept string) { version = kept }(version)
 	for _, c := range []struct{ stamped, want string }{
 		{"dev", "dev"},
@@ -596,7 +423,7 @@ func TestBuildVersionIsSanitized(t *testing.T) {
 	} {
 		version = c.stamped
 		if got := buildVersion(); got != c.want {
-			t.Errorf("version stamped as %q renders as %q, expected %q", c.stamped, got, c.want)
+			t.Errorf("version stamped as %q is labelled %q, expected %q", c.stamped, got, c.want)
 		}
 	}
 
@@ -604,8 +431,9 @@ func TestBuildVersionIsSanitized(t *testing.T) {
 	s := &server{hub: NewHub()}
 	text := renderMetrics(s)
 	checkExposition(t, text)
-	if !strings.Contains(text, `version="unknown"`) {
-		t.Errorf("a stamped version with a quote reached the render:\n%s", text)
+	info := `relay_build_info{goversion="` + goVersionLabel(runtime.Version()) + `",version="unknown"}`
+	if got, found := seriesValues(t, text)[info]; !found || got != 1 {
+		t.Errorf("a stamped version with a quote reached the scrape; %s is %v (found %v):\n%s", info, got, found, text)
 	}
 
 	// The Go version is a label too. A release toolchain names itself plainly;
@@ -618,146 +446,12 @@ func TestBuildVersionIsSanitized(t *testing.T) {
 		{"", "unknown"},
 	} {
 		if got := goVersionLabel(c.reported); got != c.want {
-			t.Errorf("Go reported as %q renders as %q, expected %q", c.reported, got, c.want)
+			t.Errorf("Go reported as %q is labelled %q, expected %q", c.reported, got, c.want)
 		}
 	}
 }
 
-func TestHistogramLandsValuesOnTheirBounds(t *testing.T) {
-	// A bucket's bound is inclusive. Compared carelessly in floating point, a
-	// share of exactly 95% lands above the 0.95 bucket — the very line the
-	// smooth verdict is drawn at.
-	durations := durationBuckets(0.0005, 0.01, 0.25)
-	shares := scaledBuckets(100, 0.95, 1.01)
-	counts := countBuckets(3, 4)
-	var slow, pace, delay histogram
-	for _, d := range []time.Duration{
-		500 * time.Microsecond, 10 * time.Millisecond, 10*time.Millisecond + 1,
-		200 * time.Millisecond, 3 * time.Second,
-	} {
-		slow.observeDuration(durations, d)
-	}
-	for _, percent := range []uint64{95, 96, 101, 102} {
-		pace.observe(shares, percent)
-	}
-	delay.observe(counts, 3)
-	delay.observe(counts, 5)
-
-	var out bytes.Buffer
-	e := newExposition(&out)
-	e.histogram("relay_example_slow_seconds", "Durations.", durations, &slow)
-	e.histogram("relay_example_pace_ratio", "Shares.", shares, &pace)
-	e.histogram("relay_example_delay_ticks", "Counts.", counts, &delay)
-	e.flush()
-	text := out.String()
-	checkExposition(t, text)
-
-	for _, c := range []struct{ series, want string }{
-		{`relay_example_slow_seconds_bucket{le="0.0005"}`, "1"},
-		{`relay_example_slow_seconds_bucket{le="0.01"}`, "2"},
-		{`relay_example_slow_seconds_bucket{le="0.25"}`, "4"},
-		{`relay_example_slow_seconds_bucket{le="+Inf"}`, "5"},
-		{`relay_example_slow_seconds_sum`, "3.220500001"},
-		{`relay_example_slow_seconds_count`, "5"},
-		{`relay_example_pace_ratio_bucket{le="0.95"}`, "1"},
-		{`relay_example_pace_ratio_bucket{le="1.01"}`, "3"},
-		{`relay_example_pace_ratio_bucket{le="+Inf"}`, "4"},
-		{`relay_example_pace_ratio_sum`, "3.94"},
-		{`relay_example_delay_ticks_bucket{le="3"}`, "1"},
-		{`relay_example_delay_ticks_bucket{le="4"}`, "1"},
-		{`relay_example_delay_ticks_bucket{le="+Inf"}`, "2"},
-		{`relay_example_delay_ticks_sum`, "8"},
-	} {
-		if got, found := seriesValue(text, c.series); !found || got != c.want {
-			t.Errorf("%s is %q (found %v), expected %q", c.series, got, found, c.want)
-		}
-	}
-}
-
-func TestLabelValuesAndHelpAreEscaped(t *testing.T) {
-	// Every label the server renders comes from a closed set, so none of these
-	// characters can reach one today. The writer escapes anyway: the day a set
-	// grows a value with a quote in it, one broken line would blank the whole
-	// scrape, not just its own series.
-	var out bytes.Buffer
-	e := newExposition(&out)
-	e.family("relay_example_escaped", "gauge", "a back\\slash\nand a new line")
-	e.sample("relay_example_escaped", []label{{"quoted", "a\"b\\c\nd"}}, 1)
-	e.flush()
-	want := "# HELP relay_example_escaped a back\\\\slash\\nand a new line\n" +
-		"# TYPE relay_example_escaped gauge\n" +
-		"relay_example_escaped{quoted=\"a\\\"b\\\\c\\nd\"} 1\n"
-	if got := out.String(); got != want {
-		t.Fatalf("escaped render:\n%s\nexpected:\n%s", got, want)
-	}
-	lines := strings.Split(want, "\n")
-	sample, err := parseSample(lines[2])
-	if err != nil || len(sample.labels) != 1 || sample.labels[0].value != "a\"b\\c\nd" {
-		t.Errorf("the escaped value did not read back: %+v, %v", sample, err)
-	}
-}
-
-func TestHistogramCountMatchesBucketsUnderConcurrentObservations(t *testing.T) {
-	// Observations never take a lock, so a scrape races them. Whatever it
-	// catches must still be one consistent histogram: a +Inf bucket that
-	// disagrees with _count, or a bucket smaller than the one before it, makes
-	// every quantile over that scrape a lie.
-	shape := durationBuckets(0.001, 0.01, 0.1)
-	var h histogram
-	const writers = 8
-	var stop atomic.Bool
-	observed := make([]uint64, writers)
-	summed := make([]uint64, writers)
-	var wg sync.WaitGroup
-	for w := range writers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for i := 0; !stop.Load(); i++ {
-				d := time.Duration(i%500) * 250 * time.Microsecond
-				h.observeDuration(shape, d)
-				observed[w]++
-				summed[w] += uint64(d)
-			}
-		}()
-	}
-
-	for n := 0; n < 300; n++ {
-		var out bytes.Buffer
-		e := newExposition(&out)
-		e.histogram("relay_example_race_seconds", "Observed while rendered.", shape, &h)
-		e.flush()
-		if problems := expositionProblems(out.String()); len(problems) > 0 {
-			stop.Store(true)
-			wg.Wait()
-			t.Fatalf("render %d under concurrent observations: %s\n%s",
-				n, strings.Join(problems, "; "), out.String())
-		}
-	}
-	stop.Store(true)
-	wg.Wait()
-
-	var total, sum uint64
-	for w := range writers {
-		total += observed[w]
-		sum += summed[w]
-	}
-	var out bytes.Buffer
-	e := newExposition(&out)
-	e.histogram("relay_example_race_seconds", "Observed while rendered.", shape, &h)
-	e.flush()
-	text := out.String()
-	checkExposition(t, text)
-	if got, _ := seriesValue(text, "relay_example_race_seconds_count"); got != strconv.FormatUint(total, 10) {
-		t.Errorf("_count is %s after %d observations", got, total)
-	}
-	wantSum := strconv.FormatFloat(float64(sum)/1e9, 'f', -1, 64)
-	if got, _ := seriesValue(text, "relay_example_race_seconds_sum"); got != wantSum {
-		t.Errorf("_sum is %s, expected %s", got, wantSum)
-	}
-}
-
-// Every platform label the server may render, in the order it renders them.
+// Every platform label the server may expose.
 var testPlatforms = []string{
 	"web", "web_android", "web_ios", "macos", "windows", "linux", "android", "ios", "unknown", "other",
 }
@@ -765,7 +459,7 @@ var testPlatforms = []string{
 func TestPlatformAndVersionLabelsAreClosed(t *testing.T) {
 	// Both come from the client's hello, as the client typed them. A label
 	// value is a series, so a stranger who could pick the values could grow the
-	// render without bound; whatever is sent, only a closed set comes out.
+	// scrape without bound; whatever is sent, only a closed set comes out.
 	for _, c := range []struct{ sent, want string }{
 		{"web", "web"},
 		{"web_android", "web_android"},
@@ -861,22 +555,25 @@ func TestPlatformAndVersionLabelsAreClosed(t *testing.T) {
 	}
 }
 
-// familySamples returns every sample of one family in a render, by the value
-// of the one label it is split by, keeping the order they were rendered in.
+// familySamples returns every sample of one family in a scrape, by the value of
+// the one label it is split by, in the order the scrape carries them.
 func familySamples(t *testing.T, text, family, labelName string) ([]string, map[string]float64) {
 	t.Helper()
+	samples, err := parseScrape(text)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, text)
+	}
 	var order []string
 	values := map[string]float64{}
-	for _, line := range strings.Split(text, "\n") {
-		if !strings.HasPrefix(line, family+"{") {
+	for _, s := range samples {
+		if s.name != family {
 			continue
 		}
-		sample, err := parseSample(line)
-		if err != nil || len(sample.labels) != 1 || sample.labels[0].name != labelName {
-			t.Fatalf("an unexpected sample of %s: %q (%v)", family, line, err)
+		if len(s.labels) != 1 || s.labels[0].GetName() != labelName {
+			t.Fatalf("an unexpected sample of %s: %s", family, s.series)
 		}
-		order = append(order, sample.labels[0].value)
-		values[sample.labels[0].value] = sample.value
+		order = append(order, s.labels[0].GetValue())
+		values[s.labels[0].GetValue()] = s.value
 	}
 	return order, values
 }
@@ -925,18 +622,21 @@ func TestLiveVersionsAreFoldedPastTen(t *testing.T) {
 		"unknown": 2,
 	}
 	if !maps.Equal(got, want) {
-		t.Errorf("live versions rendered as %v, expected %v", got, want)
+		t.Errorf("live versions exposed as %v, expected %v", got, want)
 	}
-	wantOrder := []string{"2.0.0", "1.9.0", "1.8.0", "1.0.1", "1.0.10", "1.0.2", "1.0.3", "1.0.4", "1.0.5", "1.0.6", "other", "unknown"}
+	// Which versions get a series is the server's choice; the order they are
+	// written in is the client library's, which sorts a family's series by
+	// their labels.
+	wantOrder := []string{"1.0.1", "1.0.10", "1.0.2", "1.0.3", "1.0.4", "1.0.5", "1.0.6", "1.8.0", "1.9.0", "2.0.0", "other", "unknown"}
 	if !slices.Equal(order, wantOrder) {
-		t.Errorf("live versions rendered in the order %v, expected %v", order, wantOrder)
+		t.Errorf("live versions exposed in the order %v, expected %v", order, wantOrder)
 	}
 	// The hub's rooms are a map, walked in a different order every time; the
-	// render must not follow it.
+	// scrape must not follow it.
 	for range 20 {
 		again, _ := familySamples(t, renderMetrics(s), "relay_players_by_version", "version")
 		if !slices.Equal(again, order) {
-			t.Fatalf("a second render of the same players came out in the order %v, then %v", order, again)
+			t.Fatalf("a second scrape of the same players came out as %v, then %v", order, again)
 		}
 	}
 	if players := metricValue(t, s, `relay_players{platform="ios"}`); players != 9 {
@@ -950,12 +650,12 @@ func TestLiveVersionsAreFoldedPastTen(t *testing.T) {
 	}
 	order, got = familySamples(t, renderMetrics(s), "relay_players_by_version", "version")
 	if want := map[string]float64{"other": 0, "unknown": 0}; !maps.Equal(got, want) || len(order) != 2 {
-		t.Errorf("with nobody seated, live versions rendered as %v (%v), expected %v", got, order, want)
+		t.Errorf("with nobody seated, live versions exposed as %v (%v), expected %v", got, order, want)
 	}
 	sit(client{platform: "web", version: "0.5.0"}, 1)
 	_, got = familySamples(t, renderMetrics(s), "relay_players_by_version", "version")
 	if want := map[string]float64{"0.5.0": 1, "other": 0, "unknown": 0}; !maps.Equal(got, want) {
-		t.Errorf("one player seated after everyone left rendered as %v, expected %v", got, want)
+		t.Errorf("one player seated after everyone left exposed as %v, expected %v", got, want)
 	}
 }
 
@@ -1041,10 +741,10 @@ func TestScrapingWhilePlayersComeAndGo(t *testing.T) {
 		}()
 	}
 	for range 200 {
-		if problems := expositionProblems(renderMetrics(s)); len(problems) > 0 {
+		if err := expositionProblem(renderMetrics(s)); err != nil {
 			stop.Store(true)
 			wg.Wait()
-			t.Fatalf("a render while players came and went: %s", strings.Join(problems, "; "))
+			t.Fatalf("a scrape while players came and went: %v", err)
 		}
 	}
 	stop.Store(true)
@@ -1080,7 +780,7 @@ func TestExpositionNeverCarriesCodesOrSeeds(t *testing.T) {
 	checkExposition(t, text)
 	for _, secret := range []string{code, quickCode, game} {
 		if strings.Contains(text, secret) {
-			t.Errorf("%q, a room's code or its game, is in the render:\n%s", secret, text)
+			t.Errorf("%q, a room's code or its game, is in the scrape:\n%s", secret, text)
 		}
 	}
 	// The seed's digits may turn up by chance in a memory figure, so they are
@@ -1088,38 +788,43 @@ func TestExpositionNeverCarriesCodesOrSeeds(t *testing.T) {
 	// or as a value.
 	digits := strconv.FormatUint(seed, 10)
 	lowered := []string{strings.ToLower(code), strings.ToLower(quickCode)}
-	for _, line := range strings.Split(strings.TrimSuffix(text, "\n"), "\n") {
-		if strings.HasPrefix(line, "#") {
-			continue
-		}
-		sample, err := parseSample(line)
-		if err != nil {
-			t.Fatalf("an unreadable line: %q (%v)", line, err)
-		}
+	samples, err := parseScrape(text)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, text)
+	}
+	for _, sample := range samples {
 		if sample.value == seed {
-			t.Errorf("a series carries the seed as its value: %q", line)
+			t.Errorf("a series carries the seed as its value: %s", sample.series)
 		}
 		for _, l := range sample.labels {
-			if strings.Contains(l.value, digits) || slices.Contains(lowered, l.value) {
-				t.Errorf("a label carries a room's seed or code: %q", line)
+			if strings.Contains(l.GetValue(), digits) || slices.Contains(lowered, l.GetValue()) {
+				t.Errorf("a label carries a room's seed or code: %s", sample.series)
 			}
 		}
 	}
 }
 
-// expectSeries checks several exact series in one render, in a steady order so
+// sameFigure compares two figures a scrape carries. A sum of several
+// observations is added up in floating point, in whatever order they came, so
+// 0.95 + 0.8 + 0.8 may miss 2.55 by the last bit; counts and bounds compare
+// exactly all the same.
+func sameFigure(got, want float64) bool {
+	return got == want || math.Abs(got-want) <= 1e-9*math.Max(math.Abs(got), math.Abs(want))
+}
+
+// expectSeries checks several exact series in one scrape, in a steady order so
 // that two failing runs report the same way.
 func expectSeries(t *testing.T, s *server, want map[string]float64) {
 	t.Helper()
-	text := renderMetrics(s)
+	values := seriesValues(t, renderMetrics(s))
 	for _, series := range slices.Sorted(maps.Keys(want)) {
-		raw, found := seriesValue(text, series)
+		got, found := values[series]
 		if !found {
-			t.Errorf("no series %s in the render", series)
+			t.Errorf("no series %s in the scrape", series)
 			continue
 		}
-		if got, err := strconv.ParseFloat(raw, 64); err != nil || got != want[series] {
-			t.Errorf("%s is %s, expected %v", series, raw, want[series])
+		if !sameFigure(got, want[series]) {
+			t.Errorf("%s is %v, expected %v", series, got, want[series])
 		}
 	}
 }
@@ -1161,9 +866,10 @@ func TestRoomsAreReportedByState(t *testing.T) {
 			`relay_pairing_wait_seconds_count{kind="`+kind+`",outcome="abandoned"}`,
 		)
 	}
+	firstValues := seriesValues(t, first)
 	for _, series := range zero {
-		if got, found := seriesValue(first, series); !found || got != "0" {
-			t.Errorf("before any room was opened %s is %q (found %v)", series, got, found)
+		if got, found := firstValues[series]; !found || got != 0 {
+			t.Errorf("before any room was opened %s is %v (found %v)", series, got, found)
 		}
 	}
 

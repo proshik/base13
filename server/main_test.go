@@ -5,14 +5,17 @@ package main
 // their own.
 
 import (
+	"compress/gzip"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/prometheus/common/expfmt"
 )
 
 func TestMetricsHandlerAnswersOnlyGetMetrics(t *testing.T) {
@@ -71,6 +74,10 @@ func TestMetricsTokenIsRequiredWhenSet(t *testing.T) {
 }
 
 func TestMetricsContentTypeIsPrometheusText(t *testing.T) {
+	// The type is whatever the client library negotiates, and the parameters
+	// it adds are its own business; what matters is that a scraper asking for
+	// nothing in particular is told it has the text format, and that the body
+	// is exactly that as Prometheus reads it.
 	s := &server{hub: NewHub()}
 	handler := s.metricsHandler("")
 
@@ -80,13 +87,29 @@ func TestMetricsContentTypeIsPrometheusText(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("got %d instead of 200", rec.Code)
 	}
-	if got := rec.Header().Get("Content-Type"); got != "text/plain; version=0.0.4; charset=utf-8" {
-		t.Fatalf("content type %q", got)
-	}
-	if got := rec.Header().Get("Content-Length"); got != strconv.Itoa(rec.Body.Len()) {
-		t.Fatalf("content length %q does not match the body's %d bytes", got, rec.Body.Len())
+	if format := expfmt.ResponseFormat(rec.Header()); format.FormatType() != expfmt.TypeTextPlain {
+		t.Fatalf("content type %q is not Prometheus's text format", rec.Header().Get("Content-Type"))
 	}
 	checkExposition(t, rec.Body.String())
+
+	// A scraper that accepts gzip, as Prometheus does, gets the same scrape
+	// packed.
+	req = httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req.Header.Set("Accept-Encoding", "gzip")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || rec.Header().Get("Content-Encoding") != "gzip" {
+		t.Fatalf("a scraper accepting gzip got %d with encoding %q", rec.Code, rec.Header().Get("Content-Encoding"))
+	}
+	unpacked, err := gzip.NewReader(rec.Body)
+	if err != nil {
+		t.Fatalf("the packed scrape is not gzip: %v", err)
+	}
+	body, err := io.ReadAll(unpacked)
+	if err != nil {
+		t.Fatalf("the packed scrape does not unpack: %v", err)
+	}
+	checkExposition(t, string(body))
 }
 
 func TestMetricsAreNotServedOnThePublicPort(t *testing.T) {
@@ -123,31 +146,33 @@ func assertPublicPortHasNoMetrics(t *testing.T, addr string) {
 	}
 }
 
-// blockingWriter behaves like httptest.NewRecorder, except its first Write
-// signals writing and then waits for release — standing in for a real
-// client that has stopped reading its response.
+// blockingWriter behaves like httptest.NewRecorder, except its writes
+// signal writing and then wait for release — standing in for a real client
+// that has stopped reading its response.
 type blockingWriter struct {
 	*httptest.ResponseRecorder
+	started sync.Once
 	writing chan struct{}
 	release chan struct{}
 }
 
 func (w *blockingWriter) Write(p []byte) (int, error) {
-	close(w.writing)
+	w.started.Do(func() { close(w.writing) })
 	<-w.release
 	return w.ResponseRecorder.Write(p)
 }
 
-// TestMetricsRenderLockIsReleasedBeforeTheNetworkWrite pins down the exact
-// bug the review found: a slow reader must not hold metricsMu, or every other
-// scrape queues behind it for up to WriteTimeout. A real TCP client that
-// stops reading would prove the same thing, but only once its side of the
-// connection fills the kernel's send buffer — a size and timing that vary by
-// machine and are not something a test should depend on. Blocking inside
-// Write itself reproduces the same shape deterministically: the first
-// request is genuinely stuck in its network write when the second one is
-// sent, so the second can only finish if the lock was already released.
-func TestMetricsRenderLockIsReleasedBeforeTheNetworkWrite(t *testing.T) {
+// TestASlowScrapeReaderHoldsUpNoOtherScrape pins down what a review once
+// found: a scrape stuck writing to a reader that stopped reading must hold
+// nothing another scrape needs, or every other scrape queues behind it for up
+// to WriteTimeout. A real TCP client that stops reading would prove the same
+// thing, but only once its side of the connection fills the kernel's send
+// buffer — a size and timing that vary by machine and are not something a
+// test should depend on. Blocking inside Write itself reproduces the same
+// shape deterministically: the first request is genuinely stuck in its
+// network write when the second one is sent, so the second can only finish if
+// the first holds nothing it waits for.
+func TestASlowScrapeReaderHoldsUpNoOtherScrape(t *testing.T) {
 	s := &server{hub: NewHub()}
 	handler := s.metricsHandler("")
 
@@ -184,6 +209,54 @@ func TestMetricsRenderLockIsReleasedBeforeTheNetworkWrite(t *testing.T) {
 	case <-firstDone:
 	case <-time.After(2 * time.Second):
 		t.Fatal("the first scrape did not finish after its write was released")
+	}
+}
+
+func TestAFloodOfScrapesIsTurnedAway(t *testing.T) {
+	// Every scrape gathers everything afresh, so a flood of them would each
+	// pay for a whole gather at once. Past four at a time the rest are turned
+	// away at the door. A room held locked keeps the gathers that got in from
+	// finishing, so exactly as many as the limit are still waiting when the
+	// others have been answered, whatever order they arrived in.
+	s := &server{hub: NewHub()}
+	room, err := s.hub.Create("tanks", 1)
+	if err != nil {
+		t.Fatalf("no room: %v", err)
+	}
+	handler := s.metricsHandler("")
+
+	room.mu.Lock()
+	const scrapes = 8
+	codes := make(chan int, scrapes)
+	for range scrapes {
+		go func() {
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+			codes <- rec.Code
+		}()
+	}
+	for range scrapes - 4 {
+		select {
+		case code := <-codes:
+			if code != http.StatusServiceUnavailable {
+				room.mu.Unlock()
+				t.Fatalf("a scrape past the four in flight was answered %d instead of 503", code)
+			}
+		case <-time.After(2 * time.Second):
+			room.mu.Unlock()
+			t.Fatal("the scrapes past the four in flight were not turned away")
+		}
+	}
+	room.mu.Unlock()
+	for range 4 {
+		select {
+		case code := <-codes:
+			if code != http.StatusOK {
+				t.Fatalf("a scrape that got in was answered %d once the room was free", code)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("the scrapes in flight never finished")
+		}
 	}
 }
 

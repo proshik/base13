@@ -9,7 +9,6 @@ package main
 // request.
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -30,6 +29,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // How long to wait for started requests to finish during shutdown.
@@ -91,10 +92,6 @@ type server struct {
 	statsEvery time.Duration // how long a window of a stream's evenness lasts
 	// The least time between two pace reports taken from one connection.
 	reportEvery time.Duration
-	// Guards a render, not the numbers it reads — those have their own locks.
-	// A burst of scrapers waits in line instead of each paying to build the
-	// text from scratch at once; the zero value is already usable.
-	metricsMu sync.Mutex
 }
 
 // remember reports whether there was room for one more connection.
@@ -783,8 +780,20 @@ func newMetricsServer(handler http.Handler) *http.Server {
 
 // metricsHandler answers exactly GET /metrics, with an optional bearer token.
 // Nothing else lives on this listener — no pprof, no health check — so every
-// other path and method is refused rather than routed.
+// other path and method is refused rather than routed, and a refused request
+// has nothing gathered for it.
 func (s *server) metricsHandler(token string) http.Handler {
+	// A scrape gathers everything before it writes a byte, and holds no lock
+	// of the server's while it writes, so a slow reader on the other end holds
+	// up no other scrape. Four at once is more than any honest scraper sends; a
+	// flood past them is turned away rather than each paying for a gather of
+	// its own. A gather that runs past the timeout is answered as unavailable,
+	// and a gather that fails says why in the log.
+	scrape := promhttp.HandlerFor(s.metricsGatherers(), promhttp.HandlerOpts{
+		ErrorLog:            log.Default(),
+		MaxRequestsInFlight: 4,
+		Timeout:             5 * time.Second,
+	})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/metrics" {
 			http.NotFound(w, r)
@@ -801,21 +810,7 @@ func (s *server) metricsHandler(token string) http.Handler {
 			return
 		}
 
-		// One render at a time: a burst of scrapers pays for one buffer
-		// instead of each building the whole text at once. The lock covers
-		// only the render, in its own function so a deferred unlock still
-		// fires if writeMetrics panics: held across the write below, a slow
-		// reader on the other end would keep every other scrape waiting for
-		// as long as WriteTimeout.
-		var buf bytes.Buffer
-		func() {
-			s.metricsMu.Lock()
-			defer s.metricsMu.Unlock()
-			s.writeMetrics(&buf)
-		}()
-		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-		w.Header().Set("Content-Length", strconv.Itoa(buf.Len()))
-		w.Write(buf.Bytes())
+		scrape.ServeHTTP(w, r)
 	})
 }
 

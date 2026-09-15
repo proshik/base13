@@ -74,6 +74,10 @@ type outgoing struct {
 	At   time.Duration
 }
 
+// When the process started, as the moment every stamp counts from. Taken once
+// and never written again.
+var startTime = time.Now()
+
 // stamp is the moment now, as time since the process started. Every queue holds
 // 256 slots from the moment its member sits down, and a time.Time in each slot
 // is 24 bytes where this is 8. startTime carries the monotonic clock, so a
@@ -442,16 +446,19 @@ type Hub struct {
 	waiting map[string]map[string]*Room
 	// The most rooms at once; see defaultMaxRooms.
 	limit int
-	// What the server counts as it goes. Held by value, so a hub built bare
-	// in a test counts from zero with nothing to set up.
-	stats stats
+	// What the server counts as it goes, and the registry a scrape reads it
+	// from. Every hub has its own, so a hub made in a test counts from zero.
+	stats *stats
 }
 
+// NewHub is the only way a hub is made: a hub without its stats would have
+// nowhere to count into.
 func NewHub() *Hub {
 	return &Hub{
 		rooms:   map[string]*Room{},
 		waiting: map[string]map[string]*Room{},
 		limit:   defaultMaxRooms,
+		stats:   newStats(),
 	}
 }
 
@@ -500,7 +507,7 @@ func (h *Hub) create(game string, seed uint32, public bool) (*Room, error) {
 		}
 		room := newRoom(code, game, seed)
 		room.Public = public
-		room.stats = &h.stats
+		room.stats = h.stats
 		h.rooms[code] = room
 		h.stats.roomCreated(room.kind())
 		return room, nil

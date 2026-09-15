@@ -199,7 +199,7 @@ func TestReportFieldsAreClamped(t *testing.T) {
 		`relay_client_speed_ratio_bucket{platform="linux",le="1.01"}`:    1,
 		`relay_client_speed_ratio_sum{platform="linux"}`:                 2,
 		`relay_client_waits_total`:                                       300,
-		`relay_client_input_delay_ticks_bucket{le="3"}`:                  1,
+		`relay_client_input_delay_ticks_bucket{le="5"}`:                  1,
 		`relay_client_input_delay_ticks_bucket{le="16"}`:                 1,
 		`relay_client_input_delay_ticks_count`:                           2,
 		`relay_client_input_delay_ticks_sum`:                             64,
@@ -242,6 +242,7 @@ func TestVerdictFollowsWaitsAndSpeed(t *testing.T) {
 	s := &server{hub: NewHub()}
 	first := renderMetrics(s)
 	checkExposition(t, first)
+	firstValues := seriesValues(t, first)
 	zero := []string{
 		"relay_client_input_delay_ticks_count", "relay_client_waits_total",
 		`relay_desynced_matches_total{kind="code"}`, `relay_desynced_matches_total{kind="quick"}`,
@@ -256,8 +257,8 @@ func TestVerdictFollowsWaitsAndSpeed(t *testing.T) {
 		}
 	}
 	for _, series := range zero {
-		if got, found := seriesValue(first, series); !found || got != "0" {
-			t.Errorf("before any report %s is %q (found %v)", series, got, found)
+		if got, found := firstValues[series]; !found || got != 0 {
+			t.Errorf("before any report %s is %v (found %v)", series, got, found)
 		}
 	}
 
@@ -293,7 +294,7 @@ func TestVerdictFollowsWaitsAndSpeed(t *testing.T) {
 		`relay_client_speed_ratio_bucket{platform="ios",le="0.99"}`:         1,
 		`relay_client_fps_bucket{platform="web_android",le="30"}`:           1,
 		`relay_client_fps_bucket{platform="web_android",le="60"}`:           3,
-		`relay_client_input_delay_ticks_bucket{le="4"}`:                     3,
+		`relay_client_input_delay_ticks_bucket{le="5"}`:                     3,
 		`relay_client_input_delay_ticks_bucket{le="6"}`:                     4,
 	})
 	checkExposition(t, renderMetrics(s))
