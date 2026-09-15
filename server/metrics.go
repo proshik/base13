@@ -78,6 +78,12 @@ type stats struct {
 	refusals    counterVec // over refusalLabels
 	disconnects counterVec // over disconnectLabels
 	seatings    counterVec // over seatingLabels
+
+	roomsCreated counterVec   // over roomKindLabels
+	pairings     counterVec   // over roomKindLabels
+	pairingWaits histogramVec // over pairingWaitLabels, pairingWaitBuckets
+	played       histogramVec // over roomKindLabels, playedBuckets
+	capped       atomic.Uint64
 }
 
 // Why a connection was refused. Both limits reach the client as the same
@@ -108,6 +114,35 @@ var seatingLabels = labelSet{
 	{"action", []string{"create", "join", "quick", "return"}},
 	{"platform", platforms},
 }
+
+// A room is opened by code for one particular partner, or by the quick game for
+// whoever comes next. The two are judged apart: a code was passed on to someone
+// who is expected, while the quick game waits on strangers.
+var roomKinds = []string{"code", "quick"}
+
+var roomKindLabels = labelSet{{"kind", roomKinds}}
+
+// Where a room stands: one player waiting for a partner not yet met, two
+// playing, one left alone by a partner the room already had, or nobody.
+var roomStateLabels = labelSet{
+	{"kind", roomKinds},
+	{"state", []string{"waiting", "playing", "interrupted", "empty"}},
+}
+
+// How a wait for a partner ended: the partner came, or the room was swept with
+// nobody having come.
+var pairingWaitLabels = labelSet{
+	{"kind", roomKinds},
+	{"outcome", []string{"paired", "abandoned"}},
+}
+
+// Waits from a second to ten minutes: few people look at a waiting screen for
+// longer than that.
+var pairingWaitBuckets = durationBuckets(1, 2, 5, 10, 20, 30, 60, 120, 300, 600)
+
+// Time together from half a minute, a pair that met and parted at once, to two
+// hours, a long evening's match.
+var playedBuckets = durationBuckets(30, 60, 120, 300, 600, 1200, 1800, 3600, 7200)
 
 // How many versions get a series of their own among the players seated right
 // now. Past it they are other: releases pile up over the years, and a script
@@ -175,15 +210,63 @@ func (s *stats) seated(action, platform string) {
 	s.seatings.inc(seatingLabels, action, platformLabel(platform))
 }
 
+// roomCreated counts one room opened, under its kind.
+func (s *stats) roomCreated(kind string) {
+	if s == nil {
+		return
+	}
+	s.roomsCreated.inc(roomKindLabels, kind)
+}
+
+// roomPaired counts a room's first pair, and how long the player already there
+// waited for it.
+func (s *stats) roomPaired(kind string, waited time.Duration) {
+	if s == nil {
+		return
+	}
+	s.pairings.inc(roomKindLabels, kind)
+	s.pairingWaits.at(pairingWaitLabels, kind, "paired").observeDuration(pairingWaitBuckets, waited)
+}
+
+// waitAbandoned observes how long a room waited for a partner who never came.
+func (s *stats) waitAbandoned(kind string, waited time.Duration) {
+	if s == nil {
+		return
+	}
+	s.pairingWaits.at(pairingWaitLabels, kind, "abandoned").observeDuration(pairingWaitBuckets, waited)
+}
+
+// roomPlayed observes how long a room that is gone held two players.
+func (s *stats) roomPlayed(kind string, together time.Duration) {
+	if s == nil {
+		return
+	}
+	s.played.at(roomKindLabels, kind).observeDuration(playedBuckets, together)
+}
+
+// journalCapReached counts one room whose journal stopped taking records.
+func (s *stats) journalCapReached() {
+	if s == nil {
+		return
+	}
+	s.capped.Add(1)
+}
+
 // livePlayers counts whoever is seated right now, by platform and by version
-// label. It takes each room's lock in turn and never the hub's: the caller
-// copies the rooms out from under that, so a scrape does not hold up everyone
-// sitting down for as long as it takes to walk every room.
-func livePlayers(rooms []*Room) (byPlatform []float64, byVersion map[string]int) {
+// label, and the rooms they sit in, by kind and state. One walk gives both, so
+// a room's players and its state come from the same moment. It takes each
+// room's lock in turn and never the hub's: the caller copies the rooms out from
+// under that, so a scrape does not hold up everyone sitting down for as long as
+// it takes to walk every room.
+func livePlayers(rooms []*Room) (byPlatform []float64, byVersion map[string]int, byState []float64) {
 	byPlatform = make([]float64, platformLabels.size())
 	byVersion = map[string]int{}
+	byState = make([]float64, roomStateLabels.size())
 	for _, room := range rooms {
 		room.mu.Lock()
+		if i := roomStateLabels.index(room.kind(), room.state()); i >= 0 {
+			byState[i]++
+		}
 		for _, member := range room.members {
 			if i := platformLabels.index(platformLabel(member.client.platform)); i >= 0 {
 				byPlatform[i]++
@@ -192,7 +275,7 @@ func livePlayers(rooms []*Room) (byPlatform []float64, byVersion map[string]int)
 		}
 		room.mu.Unlock()
 	}
-	return byPlatform, byVersion
+	return byPlatform, byVersion, byState
 }
 
 // versionCount is one version's series among the live players.
@@ -242,7 +325,7 @@ func (s *server) writeMetrics(w io.Writer) {
 	roomsLimit := s.hub.limit
 	rooms := slices.Collect(maps.Values(s.hub.rooms))
 	s.hub.mu.Unlock()
-	byPlatform, byVersion := livePlayers(rooms)
+	byPlatform, byVersion, byState := livePlayers(rooms)
 
 	e := newExposition(w)
 	defer e.flush()
@@ -257,6 +340,12 @@ func (s *server) writeMetrics(w io.Writer) {
 
 	e.gauge("relay_connections", "Connections open right now, in a room or still saying hello.", float64(connections))
 	e.gauge("relay_connections_limit", "The most connections held at once; zero means no cap.", float64(s.maxConns))
+	e.family("relay_rooms", "gauge",
+		"Rooms held right now, by kind and by state: waiting for a first partner, playing, "+
+			"interrupted when a partner the room already had is gone, or empty.")
+	for i := range roomStateLabels.size() {
+		e.sample("relay_rooms", roomStateLabels.labels(i), byState[i])
+	}
 	e.gauge("relay_rooms_limit", "The most rooms held at once.", float64(roomsLimit))
 	e.family("relay_players", "gauge", "Players seated in a room right now, by the platform their hello named.")
 	for i := range platformLabels.size() {
@@ -288,6 +377,24 @@ func (s *server) writeMetrics(w io.Writer) {
 		"Players seated in a room, by how they came in and the platform their hello named; "+
 			"return is coming back by code after a drop.",
 		seatingLabels, &counted.seatings)
+	e.counterVec("relay_rooms_created_total",
+		"Rooms opened, by kind: code for a room opened to pass its code on, quick for the quick game's.",
+		roomKindLabels, &counted.roomsCreated)
+	e.counterVec("relay_pairings_total",
+		"Rooms whose two seats filled for the first time; a partner coming back is not another pairing.",
+		roomKindLabels, &counted.pairings)
+	e.histogramVec("relay_pairing_wait_seconds",
+		"How long a room waited for its first partner: paired when one came, observed then; "+
+			"abandoned when none ever did, up to the moment the room emptied, observed when it is swept.",
+		pairingWaitLabels, pairingWaitBuckets, &counted.pairingWaits)
+	e.histogramVec("relay_played_seconds",
+		"How long a room held two players, counting only the time both seats were full, "+
+			"observed when the room is swept.",
+		roomKindLabels, playedBuckets, &counted.played)
+	e.counter("relay_journal_capped_total",
+		"Rooms whose journal reached its cap and stopped taking records; "+
+			"a player who drops after that cannot catch up.",
+		counted.capped.Load())
 }
 
 // How much a single vector or histogram can hold. The storage is a fixed array

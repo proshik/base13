@@ -593,3 +593,283 @@ func TestSeatedMembersCarryTheirClientAndTheHubsStats(t *testing.T) {
 		t.Fatalf("a bare room: err %v, stats %p and %p", err, bare.stats, lone.stats)
 	}
 }
+
+// shift moves a moment a room keeps back by d, as if it had come that much
+// earlier. The tests stretch time this way instead of waiting it out.
+func shift(room *Room, moment *time.Time, d time.Duration) {
+	room.mu.Lock()
+	defer room.mu.Unlock()
+	*moment = moment.Add(-d)
+}
+
+// sweepLater sweeps the hub as the sweeper would find it once every room that
+// is empty now has stood empty past its lifetime.
+func sweepLater(hub *Hub) int {
+	return hub.Sweep(time.Now().Add(emptyRoomLifetime + time.Minute))
+}
+
+func TestAPairingIsCountedOnceThoughAPlayerReturns(t *testing.T) {
+	// A pair is two people who met, not every time both seats filled up: a
+	// flaky link brings the same partner back again and again, and counted on
+	// each return it would pass for new pairs meeting.
+	s := &server{hub: NewHub()}
+	room, _ := s.hub.Create("tanks", 1)
+	host, _ := room.Join()
+	// The host waited seven seconds for the guest.
+	shift(room, &room.createdAt, 7*time.Second)
+	guest, _ := room.Join()
+	for range 3 {
+		room.Leave(guest)
+		guest, _ = room.Join()
+	}
+	room.Leave(host)
+	room.Join()
+
+	expectSeries(t, s, map[string]float64{
+		`relay_rooms_created_total{kind="code"}`:                                  1,
+		`relay_rooms_created_total{kind="quick"}`:                                 0,
+		`relay_pairings_total{kind="code"}`:                                       1,
+		`relay_pairings_total{kind="quick"}`:                                      0,
+		`relay_pairing_wait_seconds_count{kind="code",outcome="paired"}`:          1,
+		`relay_pairing_wait_seconds_bucket{kind="code",outcome="paired",le="5"}`:  0,
+		`relay_pairing_wait_seconds_bucket{kind="code",outcome="paired",le="10"}`: 1,
+		`relay_pairing_wait_seconds_count{kind="code",outcome="abandoned"}`:       0,
+	})
+	expectBetween(t, s, `relay_pairing_wait_seconds_sum{kind="code",outcome="paired"}`, 7, 8)
+
+	// Strangers from the quick game count under their own kind, and a partner
+	// who drops and comes back by the room's code is no second pair there either.
+	waiting, _, _ := s.hub.Quick("tanks", 2)
+	_, partner, _ := s.hub.Quick("tanks", 3)
+	waiting.Leave(partner)
+	waiting.Join()
+	expectSeries(t, s, map[string]float64{
+		`relay_rooms_created_total{kind="code"}`:                             1,
+		`relay_rooms_created_total{kind="quick"}`:                            1,
+		`relay_pairings_total{kind="code"}`:                                  1,
+		`relay_pairings_total{kind="quick"}`:                                 1,
+		`relay_pairing_wait_seconds_count{kind="quick",outcome="paired"}`:    1,
+		`relay_pairing_wait_seconds_count{kind="code",outcome="paired"}`:     1,
+		`relay_pairing_wait_seconds_count{kind="quick",outcome="abandoned"}`: 0,
+	})
+}
+
+func TestTimeTogetherLeavesOutTimeAlone(t *testing.T) {
+	// Played time is the time both seats were full. A player left alone until
+	// the partner comes back plays with nobody, and neither does a room standing
+	// empty for someone to return to; counted in, one flaky link would pass for
+	// hours of play.
+	s := &server{hub: NewHub()}
+	room, _ := s.hub.Create("tanks", 1)
+	host, _ := room.Join()
+	guest, _ := room.Join()
+	// A hundred seconds together, and the guest drops.
+	shift(room, &room.pairedSince, 100*time.Second)
+	room.Leave(guest)
+	// The host sits alone for a quarter of an hour: everything the room
+	// remembers from before moves that far back.
+	shift(room, &room.pairedSince, 15*time.Minute)
+	shift(room, &room.createdAt, 15*time.Minute)
+	guest, _ = room.Join()
+	// Fifty seconds more together, and both leave.
+	shift(room, &room.pairedSince, 50*time.Second)
+	room.Leave(guest)
+	room.Leave(host)
+
+	// Nothing is observed while the room still stands: the pair may come back.
+	expectSeries(t, s, map[string]float64{`relay_played_seconds_count{kind="code"}`: 0})
+	if removed := sweepLater(s.hub); removed != 1 {
+		t.Fatalf("%d rooms swept, expected the one", removed)
+	}
+	expectSeries(t, s, map[string]float64{
+		`relay_played_seconds_count{kind="code"}`:                           1,
+		`relay_played_seconds_bucket{kind="code",le="120"}`:                 0,
+		`relay_played_seconds_bucket{kind="code",le="300"}`:                 1,
+		`relay_played_seconds_count{kind="quick"}`:                          0,
+		`relay_pairing_wait_seconds_count{kind="code",outcome="abandoned"}`: 0,
+	})
+	expectBetween(t, s, `relay_played_seconds_sum{kind="code"}`, 150, 151)
+}
+
+func TestEvictionEndsTimeTogether(t *testing.T) {
+	// A member too far behind is dropped by the room, not by leaving. The pair
+	// is over at that moment all the same; missed, the time the other player
+	// then spends alone would count as play.
+	s := &server{hub: NewHub()}
+	room, _ := s.hub.Create("tanks", 1)
+	host, _ := room.Join()
+	guest, _ := room.Join()
+	shift(room, &room.pairedSince, 90*time.Second)
+	for range cap(guest.Send) + 1 {
+		room.Broadcast(host, []byte{1})
+	}
+	if room.Occupants() != 1 {
+		t.Fatalf("%d in the room: the guest who never read was not dropped", room.Occupants())
+	}
+	room.mu.Lock()
+	together := room.together
+	room.mu.Unlock()
+	if together < 90*time.Second || together >= 91*time.Second {
+		t.Fatalf("%v together when the guest was dropped, expected ninety seconds", together)
+	}
+	expectSeries(t, s, map[string]float64{
+		`relay_rooms{kind="code",state="interrupted"}`: 1,
+		`relay_rooms{kind="code",state="playing"}`:     0,
+	})
+
+	// The dropped member's connection ends a moment later and leaves. That ends
+	// no pair a second time: were it counted again, the hour would show.
+	shift(room, &room.pairedSince, time.Hour)
+	room.Leave(guest)
+	room.Leave(host)
+	sweepLater(s.hub)
+	expectSeries(t, s, map[string]float64{`relay_played_seconds_count{kind="code"}`: 1})
+	expectBetween(t, s, `relay_played_seconds_sum{kind="code"}`, 90, 91)
+}
+
+func TestSweepObservesARoomOnce(t *testing.T) {
+	// A room's end is observed when it is swept, the one moment it is certain
+	// nobody is coming back. The sweeper walks every room every minute, so a
+	// room still standing, or one already gone, must not be observed again.
+	s := &server{hub: NewHub()}
+	played, _ := s.hub.Create("tanks", 1)
+	host, _ := played.Join()
+	guest, _ := played.Join()
+	shift(played, &played.pairedSince, 40*time.Second)
+	played.Leave(guest)
+	played.Leave(host)
+	abandoned, waiter, _ := s.hub.Quick("tanks", 2)
+	shift(abandoned, &abandoned.createdAt, 3*time.Second)
+	abandoned.Leave(waiter)
+	occupied, _ := s.hub.Create("tanks", 3)
+	occupied.Join()
+
+	none := map[string]float64{
+		`relay_played_seconds_count{kind="code"}`:                            0,
+		`relay_played_seconds_count{kind="quick"}`:                           0,
+		`relay_pairing_wait_seconds_count{kind="quick",outcome="abandoned"}`: 0,
+		`relay_pairing_wait_seconds_count{kind="code",outcome="abandoned"}`:  0,
+	}
+	for range 3 {
+		s.hub.Sweep(time.Now())
+	}
+	expectSeries(t, s, none)
+
+	for i := range 5 {
+		s.hub.Sweep(time.Now().Add(emptyRoomLifetime + time.Duration(i+1)*time.Minute))
+	}
+	if s.hub.Count() != 1 {
+		t.Fatalf("%d rooms left, expected only the occupied one", s.hub.Count())
+	}
+	expectSeries(t, s, map[string]float64{
+		`relay_played_seconds_count{kind="code"}`:                            1,
+		`relay_played_seconds_count{kind="quick"}`:                           0,
+		`relay_pairing_wait_seconds_count{kind="quick",outcome="abandoned"}`: 1,
+		`relay_pairing_wait_seconds_count{kind="code",outcome="abandoned"}`:  0,
+		`relay_pairing_wait_seconds_count{kind="code",outcome="paired"}`:     1,
+	})
+	expectBetween(t, s, `relay_played_seconds_sum{kind="code"}`, 40, 41)
+	expectBetween(t, s, `relay_pairing_wait_seconds_sum{kind="quick",outcome="abandoned"}`, 3, 4)
+}
+
+func TestAQuickRoomNobodyJoinedIsObservedAsAbandoned(t *testing.T) {
+	// Someone pressed the button, nobody came, and they gave up. How long they
+	// held on is what the quick game is judged by, and it runs to the moment they
+	// left, not to the sweep minutes later.
+	s := &server{hub: NewHub()}
+	room, waiter, _ := s.hub.Quick("tanks", 1)
+	shift(room, &room.createdAt, 45*time.Second)
+	room.Leave(waiter)
+	if removed := sweepLater(s.hub); removed != 1 {
+		t.Fatalf("%d rooms swept, expected the abandoned one", removed)
+	}
+	expectSeries(t, s, map[string]float64{
+		`relay_rooms_created_total{kind="quick"}`:                                     1,
+		`relay_pairings_total{kind="quick"}`:                                          0,
+		`relay_pairing_wait_seconds_count{kind="quick",outcome="abandoned"}`:          1,
+		`relay_pairing_wait_seconds_bucket{kind="quick",outcome="abandoned",le="30"}`: 0,
+		`relay_pairing_wait_seconds_bucket{kind="quick",outcome="abandoned",le="60"}`: 1,
+		`relay_pairing_wait_seconds_count{kind="quick",outcome="paired"}`:             0,
+		`relay_pairing_wait_seconds_count{kind="code",outcome="abandoned"}`:           0,
+		`relay_played_seconds_count{kind="quick"}`:                                    0,
+	})
+	expectBetween(t, s, `relay_pairing_wait_seconds_sum{kind="quick",outcome="abandoned"}`, 45, 46)
+}
+
+func TestJournalCapIsCountedOncePerRoom(t *testing.T) {
+	// A room past its journal cap can no longer bring anyone back after a drop.
+	// That is worth knowing once per room: counted per packet, one long match
+	// would count hundreds of thousands and bury every other room.
+	s := &server{hub: NewHub()}
+	capped := func() float64 { return metricValue(t, s, "relay_journal_capped_total") }
+
+	// The byte cap: filled right up to it, then past it.
+	big := bytes.Repeat([]byte{7}, maxMessageSize)
+	bytesRoom, _ := s.hub.Create("tanks", 1)
+	for bytesRoom.JournalLength()*maxMessageSize+maxMessageSize <= maxJournalBytes {
+		bytesRoom.Broadcast(nil, big)
+	}
+	if got := capped(); got != 0 {
+		t.Fatalf("a journal filled to its cap and not past it counted %v", got)
+	}
+	for range 10 {
+		bytesRoom.Broadcast(nil, big)
+	}
+	if got := capped(); got != 1 {
+		t.Fatalf("a room past its byte cap counted %v, expected 1", got)
+	}
+
+	// The count cap, in another room: that room counts once of its own.
+	countRoom, _ := s.hub.Create("tanks", 2)
+	for range maxJournal {
+		countRoom.Broadcast(nil, []byte{1})
+	}
+	if got := capped(); got != 1 {
+		t.Fatalf("a journal filled to its record cap and not past it made the count %v", got)
+	}
+	for range 10 {
+		countRoom.Broadcast(nil, []byte{1})
+	}
+	if got := capped(); got != 2 {
+		t.Fatalf("a second room past its cap made the count %v, expected 2", got)
+	}
+}
+
+func TestABareRoomWorksWithoutStats(t *testing.T) {
+	// A room built bare belongs to no hub and has nothing to count into. Every
+	// path that counts has to work in it all the same: pairing, leaving, being
+	// dropped, the journal cap and the sweep.
+	room := newRoom("ABCDEF", "tanks", 1)
+	host, _ := room.Join()
+	guest, _ := room.Join()
+	room.Leave(guest)
+	guest, _ = room.Join()
+	for range cap(guest.Send) + 1 {
+		room.Broadcast(host, []byte{1})
+	}
+	if room.Occupants() != 1 {
+		t.Fatalf("%d in the room: the guest who never read was not dropped", room.Occupants())
+	}
+	for range maxJournal {
+		room.Broadcast(host, []byte{1})
+	}
+	room.Leave(guest)
+	room.Leave(host)
+
+	hub := NewHub()
+	hub.rooms[room.Code] = room
+	if removed := sweepLater(hub); removed != 1 {
+		t.Fatalf("%d rooms swept, expected the bare one", removed)
+	}
+	s := &server{hub: hub}
+	zero := map[string]float64{"relay_journal_capped_total": 0}
+	for _, kind := range []string{"code", "quick"} {
+		zero[`relay_rooms_created_total{kind="`+kind+`"}`] = 0
+		zero[`relay_pairings_total{kind="`+kind+`"}`] = 0
+		zero[`relay_played_seconds_count{kind="`+kind+`"}`] = 0
+		for _, outcome := range []string{"paired", "abandoned"} {
+			zero[`relay_pairing_wait_seconds_count{kind="`+kind+`",outcome="`+outcome+`"}`] = 0
+		}
+	}
+	expectSeries(t, s, zero)
+}

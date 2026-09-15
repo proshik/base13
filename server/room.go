@@ -145,6 +145,9 @@ type Room struct {
 	// Matchmaking opens a public room, a code opens a private one. Nothing
 	// else separates them: a room opened for one particular person must not
 	// fall to a random passer-by, and that is the only difference.
+	//
+	// Set before the room is in the hub's map and never after, so it is read
+	// without the room's lock.
 	Public  bool
 	mu      sync.Mutex
 	members map[int]*Member
@@ -153,15 +156,90 @@ type Room struct {
 	// The hub's counts, set before the room is in the hub's map; nil in a room
 	// built bare, which then counts nothing.
 	stats *stats
+	// When the room was opened. Like Public, never written once anyone else
+	// can see the room.
+	createdAt time.Time
+	// The room's pair, under mu. paired is set the first time both seats fill
+	// and stays set: a partner coming back after a drop is the same pair, not a
+	// new one. pairedSince is when both seats last filled, and together adds up
+	// every stretch they stayed full.
+	paired      bool
+	pairedSince time.Time
+	together    time.Duration
+	// Set the first time the journal turns a record away, under mu: past the
+	// cap every packet is turned away, and the room is counted once, not once
+	// per packet.
+	journalCapped bool
 }
 
 func newRoom(code, game string, seed uint32) *Room {
 	return &Room{
-		Code:    code,
-		Game:    game,
-		Seed:    seed,
-		members: map[int]*Member{},
+		Code:      code,
+		Game:      game,
+		Seed:      seed,
+		members:   map[int]*Member{},
+		createdAt: time.Now(),
 	}
+}
+
+// kind names the room for the metrics: quick for matchmaking's rooms, code for
+// rooms opened to pass their code on.
+func (r *Room) kind() string {
+	if r.Public {
+		return "quick"
+	}
+	return "code"
+}
+
+// state names where the room stands right now. Called under the room's lock.
+// A single player is waiting only until the room's first pair: after that,
+// they are waiting for a partner who was already there and dropped, which is
+// a broken match rather than a quiet quick game.
+func (r *Room) state() string {
+	switch len(r.members) {
+	case 0:
+		return "empty"
+	case roomCapacity:
+		return "playing"
+	}
+	if r.paired {
+		return "interrupted"
+	}
+	return "waiting"
+}
+
+// occupancyChanged keeps track of the room's pair. Called under the room's lock
+// from every place a member comes or goes, with how many were seated before.
+//
+// The first time both seats fill is the pairing, counted with how long the room
+// waited for it. Every time they stop being full, the stretch just ended is
+// added to the time together: a player left alone until the partner comes back
+// is playing with nobody, and a room standing empty even less so.
+func (r *Room) occupancyChanged(before int) {
+	after := len(r.members)
+	switch {
+	case before < roomCapacity && after == roomCapacity:
+		now := time.Now()
+		r.pairedSince = now
+		if !r.paired {
+			r.paired = true
+			r.stats.roomPaired(r.kind(), now.Sub(r.createdAt))
+		}
+	case before == roomCapacity && after < roomCapacity:
+		r.together += time.Since(r.pairedSince)
+	}
+}
+
+// swept observes a room as the sweep removes it, under its lock. Only now is it certain
+// that nobody is coming back: a room that ever held a pair reports how long it
+// held one, and a room that never did reports how long it waited, up to the
+// moment its last player gave up and left.
+func (r *Room) swept() {
+	if r.paired {
+		r.stats.roomPlayed(r.kind(), r.together)
+		return
+	}
+	r.stats.waitAbandoned(r.kind(), r.emptyAt.Sub(r.createdAt))
 }
 
 // available reports whether the room is fit for matchmaking. Called under the
@@ -192,8 +270,10 @@ func (r *Room) JoinAs(c client) (*Member, error) {
 			continue
 		}
 		member := &Member{Slot: slot, Send: make(chan outgoing, 256), client: c, stats: r.stats}
+		before := len(r.members)
 		r.members[slot] = member
 		r.emptyAt = time.Time{}
+		r.occupancyChanged(before)
 		return member, nil
 	}
 	return nil, errRoomFull
@@ -202,10 +282,12 @@ func (r *Room) JoinAs(c client) (*Member, error) {
 func (r *Room) Leave(member *Member) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	before := len(r.members)
 	if current, ok := r.members[member.Slot]; ok && current == member {
 		delete(r.members, member.Slot)
 		close(member.Send)
 	}
+	r.occupancyChanged(before)
 	if len(r.members) == 0 {
 		// Not removed at once: whoever dropped out must have time to return.
 		r.emptyAt = time.Now()
@@ -224,6 +306,9 @@ func (r *Room) Broadcast(from *Member, data []byte) {
 			sender = from.Slot
 		}
 		r.journal.append(sender, data)
+	} else if !r.journalCapped {
+		r.journalCapped = true
+		r.stats.journalCapReached()
 	}
 	for slot, member := range r.members {
 		if from != nil && slot == from.Slot {
@@ -236,7 +321,9 @@ func (r *Room) Broadcast(from *Member, data []byte) {
 			// their connection is more honest than slowing the game for
 			// everyone else.
 			close(member.Send)
+			before := len(r.members)
 			delete(r.members, slot)
+			r.occupancyChanged(before)
 		}
 	}
 }
@@ -357,12 +444,16 @@ func (h *Hub) forget(room *Room) {
 func (h *Hub) Create(game string, seed uint32) (*Room, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return h.create(game, seed)
+	return h.create(game, seed, false)
 }
 
 // create opens a room. Called with the hub's lock already held: matchmaking
 // needs to open a room without letting go of it.
-func (h *Hub) create(game string, seed uint32) (*Room, error) {
+//
+// Whether the room is public is decided here, before the room is in the map, so
+// nothing that finds the room ever sees it change. A scrape reads it without
+// the room's lock, which is safe only for a field no one writes after that.
+func (h *Hub) create(game string, seed uint32, public bool) (*Room, error) {
 	if len(h.rooms) >= h.limit {
 		return nil, errServerBusy
 	}
@@ -375,8 +466,10 @@ func (h *Hub) create(game string, seed uint32) (*Room, error) {
 			continue
 		}
 		room := newRoom(code, game, seed)
+		room.Public = public
 		room.stats = &h.stats
 		h.rooms[code] = room
+		h.stats.roomCreated(room.kind())
 		return room, nil
 	}
 	return nil, errors.New("could not find a free code")
@@ -421,11 +514,10 @@ func (h *Hub) QuickAs(game string, seed uint32, c client) (*Room, *Member, error
 		return room, member, nil
 	}
 
-	room, err := h.create(game, seed)
+	room, err := h.create(game, seed, true)
 	if err != nil {
 		return nil, nil, err
 	}
-	room.Public = true
 	member, err := room.JoinAs(c)
 	if err != nil {
 		return nil, nil, err
@@ -450,6 +542,10 @@ func (h *Hub) Find(game, code string) (*Room, error) {
 }
 
 // Sweep removes rooms that have stood empty longer than the allotted time.
+//
+// A room is observed as it goes, and only then. It leaves the map in the same
+// pass, under the hub's lock, so no later sweep can find it and observe it
+// twice; a room still standing may yet see its pair come back.
 func (h *Hub) Sweep(now time.Time) int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -458,6 +554,9 @@ func (h *Hub) Sweep(now time.Time) int {
 		room.mu.Lock()
 		empty := len(room.members) == 0 && !room.emptyAt.IsZero() &&
 			now.Sub(room.emptyAt) > emptyRoomLifetime
+		if empty {
+			room.swept()
+		}
 		room.mu.Unlock()
 		if empty {
 			delete(h.rooms, code)

@@ -1106,3 +1106,151 @@ func TestExpositionNeverCarriesCodesOrSeeds(t *testing.T) {
 		}
 	}
 }
+
+// expectSeries checks several exact series in one render, in a steady order so
+// that two failing runs report the same way.
+func expectSeries(t *testing.T, s *server, want map[string]float64) {
+	t.Helper()
+	text := renderMetrics(s)
+	for _, series := range slices.Sorted(maps.Keys(want)) {
+		raw, found := seriesValue(text, series)
+		if !found {
+			t.Errorf("no series %s in the render", series)
+			continue
+		}
+		if got, err := strconv.ParseFloat(raw, 64); err != nil || got != want[series] {
+			t.Errorf("%s is %s, expected %v", series, raw, want[series])
+		}
+	}
+}
+
+// expectBetween checks a series that holds a measured time: at least low,
+// and less than high.
+func expectBetween(t *testing.T, s *server, series string, low, high float64) {
+	t.Helper()
+	if got := metricValue(t, s, series); got < low || got >= high {
+		t.Errorf("%s is %v, expected at least %v and less than %v", series, got, low, high)
+	}
+}
+
+func TestRoomsAreReportedByState(t *testing.T) {
+	// Where every room stands right now, read from the rooms themselves at the
+	// scrape. The matchmaking queue cannot say it: a waiter who gave up stays
+	// in the queue until the next quick player walks past, and counted from it
+	// they would still be waiting.
+	s := &server{hub: NewHub()}
+	kinds := []string{"code", "quick"}
+	states := []string{"waiting", "playing", "interrupted", "empty"}
+	rooms := func(kind, state string) string {
+		return `relay_rooms{kind="` + kind + `",state="` + state + `"}`
+	}
+
+	// Every room and product series from the very first scrape, at zero.
+	first := renderMetrics(s)
+	checkExposition(t, first)
+	zero := []string{"relay_journal_capped_total"}
+	for _, kind := range kinds {
+		for _, state := range states {
+			zero = append(zero, rooms(kind, state))
+		}
+		zero = append(zero,
+			`relay_rooms_created_total{kind="`+kind+`"}`,
+			`relay_pairings_total{kind="`+kind+`"}`,
+			`relay_played_seconds_count{kind="`+kind+`"}`,
+			`relay_pairing_wait_seconds_count{kind="`+kind+`",outcome="paired"}`,
+			`relay_pairing_wait_seconds_count{kind="`+kind+`",outcome="abandoned"}`,
+		)
+	}
+	for _, series := range zero {
+		if got, found := seriesValue(first, series); !found || got != "0" {
+			t.Errorf("before any room was opened %s is %q (found %v)", series, got, found)
+		}
+	}
+
+	// A different number of rooms in every state, so that no two series can be
+	// mistaken for each other.
+	waiting, _ := s.hub.Create("tanks", 1)
+	waiting.Join()
+	for range 2 {
+		room, _ := s.hub.Create("tanks", 1)
+		room.Join()
+		room.Join()
+	}
+	// Interrupted: a partner dropped out three times over, and once the pair
+	// both left and one came back. Either way someone is waiting for a partner
+	// they already had.
+	for range 3 {
+		room, _ := s.hub.Create("tanks", 1)
+		room.Join()
+		guest, _ := room.Join()
+		room.Leave(guest)
+	}
+	{
+		room, _ := s.hub.Create("tanks", 1)
+		host, _ := room.Join()
+		guest, _ := room.Join()
+		room.Leave(guest)
+		room.Leave(host)
+		room.Join()
+	}
+	// Empty: opened and nobody seated yet, a host who left before anyone came,
+	// and a pair who both left.
+	s.hub.Create("tanks", 1)
+	for range 2 {
+		room, _ := s.hub.Create("tanks", 1)
+		host, _ := room.Join()
+		room.Leave(host)
+	}
+	{
+		room, _ := s.hub.Create("tanks", 1)
+		host, _ := room.Join()
+		guest, _ := room.Join()
+		room.Leave(guest)
+		room.Leave(host)
+	}
+
+	// Quick rooms, each game on its own so that nobody gets matched by accident.
+	game := 0
+	quick := func() (*Room, *Member) {
+		game++
+		room, member, err := s.hub.Quick("quick"+strconv.Itoa(game), 1)
+		if err != nil {
+			t.Fatalf("no quick room: %v", err)
+		}
+		return room, member
+	}
+	for range 4 {
+		quick()
+	}
+	for range 3 {
+		room, _ := quick()
+		s.hub.Quick(room.Game, 2)
+	}
+	for range 2 {
+		room, _ := quick()
+		_, partner, _ := s.hub.Quick(room.Game, 2)
+		room.Leave(partner)
+	}
+	gaveUp, waiter := quick()
+	gaveUp.Leave(waiter)
+	if queued := s.hub.waitingCount(gaveUp.Game); queued != 1 {
+		t.Fatalf("the queue holds %d rooms of a waiter who gave up; the test needs it to still hold one", queued)
+	}
+
+	want := map[string]float64{
+		rooms("code", "waiting"): 1, rooms("code", "playing"): 2, rooms("code", "interrupted"): 4, rooms("code", "empty"): 4,
+		rooms("quick", "waiting"): 4, rooms("quick", "playing"): 3, rooms("quick", "interrupted"): 2, rooms("quick", "empty"): 1,
+	}
+	expectSeries(t, s, want)
+	checkExposition(t, renderMetrics(s))
+
+	// A waiter who is found moves from waiting to playing, and the room of the
+	// one who gave up is gone once swept.
+	waitingRoom, _ := quick()
+	want[rooms("quick", "waiting")]++
+	expectSeries(t, s, want)
+	s.hub.Quick(waitingRoom.Game, 2)
+	want[rooms("quick", "waiting")]--
+	want[rooms("quick", "playing")]++
+	expectSeries(t, s, want)
+}
