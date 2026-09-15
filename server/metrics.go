@@ -71,7 +71,50 @@ func goVersionLabel(reported string) string {
 // is a counterVec; a histogram is a histogram, or a histogramVec over a label
 // set. Recording takes no lock — it runs on the paths that relay packets — and
 // writeMetrics renders each field in its place.
-type stats struct{}
+type stats struct {
+	opened      atomic.Uint64
+	refusals    counterVec // over refusalLabels
+	disconnects counterVec // over disconnectLabels
+}
+
+// Why a connection was refused. Both limits reach the client as the same
+// "busy", which is all it needs to show; whoever runs the server needs to know
+// which limit it was, because raising the wrong one fixes nothing.
+var refusalLabels = labelSet{{"reason", []string{
+	"rooms_limit", "connections_limit", "full", "no_room", "bad_hello", "other",
+}}}
+
+// How a seated player's connection ended: they said goodbye, went silent past
+// the read deadline, dropped without a word, were cut off by our own side, or
+// broke the protocol.
+var disconnectLabels = labelSet{{"cause", []string{
+	"goodbye", "idle", "lost", "cut", "protocol",
+}}}
+
+// connectionOpened counts one WebSocket upgrade, whatever becomes of it after.
+func (s *stats) connectionOpened() {
+	if s == nil {
+		return
+	}
+	s.opened.Add(1)
+}
+
+// refused counts one refusal under a reason from refusalLabels.
+func (s *stats) refused(reason string) {
+	if s == nil {
+		return
+	}
+	s.refusals.inc(refusalLabels, reason)
+}
+
+// disconnected counts one seated connection ending, under a cause from
+// disconnectLabels.
+func (s *stats) disconnected(cause string) {
+	if s == nil {
+		return
+	}
+	s.disconnects.inc(disconnectLabels, cause)
+}
 
 // writeMetrics renders the server's whole state. Families come in a fixed
 // order, so two scrapes of the same state are the same bytes.
@@ -103,6 +146,18 @@ func (s *server) writeMetrics(w io.Writer) {
 
 	writeRuntimeMetrics(e)
 	writeProcessFamilies(e, procRoot)
+
+	// Counted as they happen, so read without any lock: every field is atomic.
+	counted := &s.hub.stats
+	e.counter("relay_connections_opened_total",
+		"WebSocket connections accepted, counted at the upgrade, refused ones among them.",
+		counted.opened.Load())
+	e.counterVec("relay_refusals_total",
+		"Connections refused, by the reason they were refused for.",
+		refusalLabels, &counted.refusals)
+	e.counterVec("relay_disconnects_total",
+		"Connections of seated players that ended, by how they ended.",
+		disconnectLabels, &counted.disconnects)
 }
 
 // How much a single vector or histogram can hold. The storage is a fixed array

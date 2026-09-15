@@ -13,6 +13,8 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
+	"fmt"
 	"io"
 	"math/big"
 	"net"
@@ -923,5 +925,319 @@ func TestTheEngineIsServedCompressedToABrowserThatAcceptsIt(t *testing.T) {
 	defer answer.Body.Close()
 	if body, _ := io.ReadAll(answer.Body); string(body) != "not-a-real-wasm" {
 		t.Fatalf("a client without gzip got %q", body)
+	}
+}
+
+// --- counting connections and how they end ---
+
+func TestRefusalsAreCountedByTheirOwnReason(t *testing.T) {
+	// A refusal is counted under the reason named where it is made. Read back
+	// from what greet returns it would be wrong twice over: a hello with no game
+	// and one with an unknown action come back as the same "no room" error a
+	// wrong code does, and both limits reach the client as the same "busy".
+	s := &server{hub: NewHub(), maxConns: 4}
+	s.hub.limit = 1
+	addr, stop := serve(t, s)
+	defer stop()
+
+	want := map[string]float64{}
+	check := func(step string) {
+		t.Helper()
+		for _, reason := range []string{"rooms_limit", "connections_limit", "full", "no_room", "bad_hello", "other"} {
+			series := `relay_refusals_total{reason="` + reason + `"}`
+			if got := metricValue(t, s, series); got != want[reason] {
+				t.Errorf("after %s: %s is %v, expected %v", step, series, got, want[reason])
+			}
+		}
+	}
+	// refusedWith sends a first packet, expects a refusal with the given marker
+	// on the wire, and hangs up at once: the server then lets go of the socket
+	// now rather than after its farewell's linger.
+	refusedWith := func(first []byte, marker string) {
+		t.Helper()
+		c := dial(t, addr)
+		c.send(t, first)
+		if answer := c.welcome(t); answer.OK || answer.Reason != marker {
+			t.Fatalf("expected a refusal marked %q, got %+v", marker, answer)
+		}
+		c.conn.Close()
+	}
+	packet := func(h hello) []byte {
+		body, _ := json.Marshal(h)
+		return body
+	}
+	check("nothing at all")
+
+	host := dial(t, addr)
+	host.sendJSON(t, hello{Action: "create", Game: "tanks", Seed: 5})
+	code := host.welcome(t).Code
+	guest := dial(t, addr)
+	guest.sendJSON(t, hello{Action: "join", Game: "tanks", Code: code})
+	if answer := guest.welcome(t); !answer.OK {
+		t.Fatalf("the guest was refused: %+v", answer)
+	}
+
+	refusedWith(packet(hello{Action: "join", Game: "tanks", Code: code}), "full")
+	want["full"] = 1
+	check("a third knocking at a full room")
+
+	refusedWith(packet(hello{Action: "join", Game: "tanks", Code: "ZZZZZZ"}), "no_room")
+	want["no_room"] = 1
+	check("a code nobody opened")
+
+	refusedWith(packet(hello{Action: "create", Game: "tanks"}), "busy")
+	want["rooms_limit"] = 1
+	check("a room past the room limit")
+
+	refusedWith([]byte{0xFF, 0x00, 0x13}, "bad_hello")
+	refusedWith(packet(hello{Action: "create"}), "bad_hello")
+	refusedWith(packet(hello{Action: "dance", Game: "tanks"}), "bad_hello")
+	want["bad_hello"] = 3
+	check("three hellos the server could not act on")
+
+	// The cap on connections: the two seated ones and two that never say hello
+	// fill it, and the fifth is refused before it is read at all.
+	eventually(t, func() bool { return metricValue(t, s, "relay_connections") == 2 })
+	dial(t, addr)
+	dial(t, addr)
+	eventually(t, func() bool { return metricValue(t, s, "relay_connections") == 4 })
+	refusedWith(packet(hello{Action: "create", Game: "tanks"}), "busy")
+	want["connections_limit"] = 1
+	check("a connection past the connection limit")
+
+	// A plain request to the socket path never became a connection, so it is
+	// neither opened nor refused.
+	response, err := http.Get("http://" + addr + "/ws")
+	if err != nil {
+		t.Fatalf("the plain request did not go through: %v", err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("a plain request to the socket path got %d", response.StatusCode)
+	}
+	check("a request that never upgraded")
+	// Every upgrade is opened, refused or not: two seated, seven refused, two
+	// that never said hello.
+	if got := metricValue(t, s, "relay_connections_opened_total"); got != 11 {
+		t.Errorf("relay_connections_opened_total is %v, expected 11", got)
+	}
+	checkExposition(t, renderMetrics(s))
+
+	// Whatever else the hub may answer with has no reason of its own, and is
+	// counted as other rather than dropped.
+	for _, c := range []struct {
+		err  error
+		want string
+	}{
+		{errServerBusy, "rooms_limit"},
+		{errNoSuchRoom, "no_room"},
+		{errRoomFull, "full"},
+		{errors.New("could not find a free code"), "other"},
+	} {
+		if got := refusalReason(c.err); got != c.want {
+			t.Errorf("the hub's %q is counted as %q, expected %q", c.err, got, c.want)
+		}
+	}
+}
+
+func TestAGoodbyeIsCountedAsGoodbye(t *testing.T) {
+	// A player who leaves on purpose sends a close frame, and the server closes
+	// the socket itself in reply. Looked at only through the socket, that is our
+	// own side cutting them off; the goodbye has to be told apart first, or every
+	// ordinary exit reads as a cut.
+	s := &server{hub: NewHub()}
+	addr, stop := serve(t, s)
+	defer stop()
+
+	check := func(step string, want map[string]float64) {
+		t.Helper()
+		for _, cause := range []string{"goodbye", "idle", "lost", "cut", "protocol"} {
+			series := `relay_disconnects_total{cause="` + cause + `"}`
+			if got := metricValue(t, s, series); got != want[cause] {
+				t.Errorf("after %s: %s is %v, expected %v", step, series, got, want[cause])
+			}
+		}
+	}
+
+	// Connections that never took a seat are not a player's connection ending:
+	// one is a refusal, the other hung up before saying anything.
+	silent := dial(t, addr)
+	stranger := dial(t, addr)
+	stranger.sendJSON(t, hello{Action: "join", Game: "tanks", Code: "ZZZZZZ"})
+	stranger.welcome(t)
+	eventually(t, func() bool { return metricValue(t, s, "relay_connections") == 2 })
+	silent.conn.Close()
+	stranger.conn.Close()
+	eventually(t, func() bool { return metricValue(t, s, "relay_connections") == 0 })
+	check("two that never sat down", nil)
+
+	host := dial(t, addr)
+	host.sendJSON(t, hello{Action: "create", Game: "tanks", Seed: 9})
+	code := host.welcome(t).Code
+	guest := dial(t, addr)
+	guest.sendJSON(t, hello{Action: "join", Game: "tanks", Code: code})
+	guest.welcome(t)
+
+	// 1000, a normal closure, as a browser sends when the page closes the socket.
+	host.conn.Write(clientFrame(opClose, []byte{0x03, 0xE8}))
+	eventually(t, func() bool { return metricValue(t, s, "relay_connections") == 1 })
+	check("the host said goodbye", map[string]float64{"goodbye": 1})
+
+	// The partner hears that the host left, and then simply vanishes: no close
+	// frame, only the end of the stream. The notice is read first so the server
+	// has nothing left to write to a socket that is gone.
+	guest.receiveText(t)
+	guest.conn.Close()
+	eventually(t, func() bool { return metricValue(t, s, "relay_connections") == 0 })
+	check("the guest vanished", map[string]float64{"goodbye": 1, "lost": 1})
+	checkExposition(t, renderMetrics(s))
+}
+
+// tcpPair is a real socket pair on loopback: the client writes on the left, the
+// server reads on the right. A pipe will not do where the error matters, because
+// a pipe closed on our side reads back as a pipe error, not as the closed
+// network connection a real socket reports.
+func tcpPair(t *testing.T) (net.Conn, *Conn) {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("no listener: %v", err)
+	}
+	defer listener.Close()
+	client, err := net.Dial("tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatalf("could not connect: %v", err)
+	}
+	raw, err := listener.Accept()
+	if err != nil {
+		t.Fatalf("could not accept: %v", err)
+	}
+	t.Cleanup(func() { client.Close(); raw.Close() })
+	return client, &Conn{raw: raw, reader: bufio.NewReader(raw)}
+}
+
+// timeoutError is a timeout from some layer other than the socket's deadline.
+type timeoutError struct{}
+
+func (timeoutError) Error() string   { return "timed out" }
+func (timeoutError) Timeout() bool   { return true }
+func (timeoutError) Temporary() bool { return true }
+
+func TestHowAConnectionEndedIsClassified(t *testing.T) {
+	// The cause is read from the error a read really ends with, not from one
+	// made up to match: a classifier shown only its own sentinels says nothing
+	// about the sockets it will actually be handed.
+	readEnd := func(t *testing.T, conn *Conn) error {
+		t.Helper()
+		ended := make(chan error, 1)
+		go func() {
+			_, err := conn.ReadMessage()
+			ended <- err
+		}()
+		select {
+		case err := <-ended:
+			return err
+		case <-time.After(2 * time.Second):
+			t.Fatal("the read never ended")
+			return nil
+		}
+	}
+	unfinished := func(opcode byte, payload []byte) []byte {
+		frame := clientFrame(opcode, payload)
+		frame[0] &^= 0x80
+		return frame
+	}
+
+	for _, c := range []struct {
+		name string
+		want string
+		end  func(t *testing.T) error
+	}{
+		{"a close frame", "goodbye", func(t *testing.T) error {
+			client, server := tcpPair(t)
+			client.Write(clientFrame(opClose, []byte{0x03, 0xE8}))
+			return readEnd(t, server)
+		}},
+		{"silence past the read deadline", "idle", func(t *testing.T) error {
+			_, server := tcpPair(t)
+			server.readIdle = 20 * time.Millisecond
+			return readEnd(t, server)
+		}},
+		{"a timeout from another layer", "idle", func(t *testing.T) error {
+			return fmt.Errorf("reading: %w", timeoutError{})
+		}},
+		{"the other side hung up", "lost", func(t *testing.T) error {
+			client, server := tcpPair(t)
+			client.Close()
+			return readEnd(t, server)
+		}},
+		{"the other side hung up mid-frame", "lost", func(t *testing.T) error {
+			client, server := tcpPair(t)
+			client.Write(clientFrame(opBinary, []byte{1, 2, 3, 4, 5, 6})[:5])
+			client.Close()
+			return readEnd(t, server)
+		}},
+		{"the other side reset the connection", "lost", func(t *testing.T) error {
+			client, server := tcpPair(t)
+			client.(*net.TCPConn).SetLinger(0)
+			client.Close()
+			return readEnd(t, server)
+		}},
+		{"our side closed the socket under the read", "cut", func(t *testing.T) error {
+			_, server := tcpPair(t)
+			go func() {
+				time.Sleep(20 * time.Millisecond)
+				server.Close()
+			}()
+			return readEnd(t, server)
+		}},
+		{"a ping already buffered when our side closed", "cut", func(t *testing.T) error {
+			// The reader still holds a ping it read before the socket was
+			// closed, and answering it is what fails. That is our side's close
+			// too, not a goodbye from theirs.
+			left, right := net.Pipe()
+			t.Cleanup(func() { left.Close() })
+			conn := &Conn{raw: right, reader: bufio.NewReader(bytes.NewReader(clientFrame(opPing, nil)))}
+			conn.Close()
+			return readEnd(t, conn)
+		}},
+		{"a message stitched past the cap", "protocol", func(t *testing.T) error {
+			client, server := tcpPair(t)
+			piece := bytes.Repeat([]byte{1}, 300)
+			client.Write(append(unfinished(opBinary, piece), clientFrame(opContinuation, piece)...))
+			return readEnd(t, server)
+		}},
+		{"a frame past the cap", "protocol", func(t *testing.T) error {
+			client, server := tcpPair(t)
+			client.Write([]byte{0x80 | opBinary, 0x80 | 127, 0, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF})
+			return readEnd(t, server)
+		}},
+		{"a control frame past 125 bytes", "protocol", func(t *testing.T) error {
+			client, server := tcpPair(t)
+			client.Write(clientFrame(opPing, bytes.Repeat([]byte{1}, 126)))
+			return readEnd(t, server)
+		}},
+		{"a control frame in pieces", "protocol", func(t *testing.T) error {
+			client, server := tcpPair(t)
+			client.Write(unfinished(opPing, []byte("hey")))
+			return readEnd(t, server)
+		}},
+		{"an unknown frame kind", "protocol", func(t *testing.T) error {
+			client, server := tcpPair(t)
+			client.Write(clientFrame(0x3, []byte{1}))
+			return readEnd(t, server)
+		}},
+		{"a protocol error wrapped once more", "protocol", func(t *testing.T) error {
+			client, server := tcpPair(t)
+			client.Write(clientFrame(0x3, []byte{1}))
+			return fmt.Errorf("greeting: %w", readEnd(t, server))
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			err := c.end(t)
+			if got := classifyEnd(err); got != c.want {
+				t.Errorf("a read that ended with %v is counted as %q, expected %q", err, got, c.want)
+			}
+		})
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"flag"
 	"log"
 	"mime"
@@ -382,12 +383,17 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	// Counted before the cap is checked: a connection refused for the cap was
+	// still opened, and the two together say how hard the cap is being hit.
+	s.hub.stats.connectionOpened()
 	if s.readIdle > 0 {
 		conn.readIdle = s.readIdle
 	}
 	defer conn.Close()
 	if !s.remember(conn) {
-		refuse(conn, errServerBusy.Error(), reasonCode(errServerBusy))
+		// On the wire the same "busy" a full hub sends: the client has nothing
+		// different to do about either.
+		s.refuse(conn, "connections_limit", errServerBusy.Error(), reasonCode(errServerBusy))
 		return
 	}
 	defer s.forget(conn)
@@ -415,6 +421,7 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 	for {
 		packet, err := conn.ReadMessage()
 		if err != nil {
+			s.hub.stats.disconnected(classifyEnd(err))
 			return
 		}
 		now := time.Now()
@@ -437,16 +444,20 @@ func (s *server) greet(conn *Conn, r *http.Request) (*Room, *Member, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	// Each refusal below names the reason it is counted under right where it is
+	// made. The error greet returns cannot be trusted with that: a hello with no
+	// game and one with an unknown action both return errNoSuchRoom, the same
+	// as a code nobody opened.
 	var request hello
 	if err := json.Unmarshal(raw, &request); err != nil {
-		refuse(conn, "first packet could not be parsed", "bad_hello")
+		s.refuse(conn, "bad_hello", "first packet could not be parsed", "bad_hello")
 		return nil, nil, err
 	}
 	if request.Game == "" {
 		request.Game = r.URL.Query().Get("game")
 	}
 	if request.Game == "" {
-		refuse(conn, "no game given", "bad_hello")
+		s.refuse(conn, "bad_hello", "no game given", "bad_hello")
 		return nil, nil, errNoSuchRoom
 	}
 
@@ -463,19 +474,21 @@ func (s *server) greet(conn *Conn, r *http.Request) (*Room, *Member, error) {
 		// one room and one of them gets refused.
 		room, member, err = s.hub.Quick(request.Game, request.Seed)
 	default:
-		refuse(conn, "unknown action", "bad_hello")
+		s.refuse(conn, "bad_hello", "unknown action", "bad_hello")
 		return nil, nil, errNoSuchRoom
 	}
 	if err != nil {
 		log.Printf("refused (%s): %s", request.Action, err)
-		refuse(conn, err.Error(), reasonCode(err))
+		s.refuse(conn, refusalReason(err), err.Error(), reasonCode(err))
 		return nil, nil, err
 	}
 
 	if member == nil {
 		member, err = room.Join()
 		if err != nil {
-			refuse(conn, err.Error(), reasonCode(err))
+			// A room found by its code has only one way to turn a member away:
+			// both seats are taken.
+			s.refuse(conn, "full", err.Error(), reasonCode(err))
 			return nil, nil, err
 		}
 	}
@@ -522,11 +535,57 @@ func (s *server) greet(conn *Conn, r *http.Request) (*Room, *Member, error) {
 	return room, member, nil
 }
 
-func refuse(conn *Conn, explanation, code string) {
+// refuse answers with a refusal and says goodbye. The reason it is counted
+// under is a parameter, not something worked out here, so that no refusal can
+// be made without naming one; the code is what the client is told, and several
+// reasons share one code.
+func (s *server) refuse(conn *Conn, reason, explanation, code string) {
+	s.hub.stats.refused(reason)
 	body, _ := json.Marshal(welcome{OK: false, Error: explanation, Reason: code})
 	conn.WriteText(body)
 	conn.CloseWith(closePolicy, code)
 	conn.drain()
+}
+
+// refusalReason names the counted reason for an error the hub refused with.
+// Only for the hub's own answers: greet's returned error is not one of them.
+func refusalReason(err error) string {
+	switch err {
+	case errServerBusy:
+		return "rooms_limit"
+	case errNoSuchRoom:
+		return "no_room"
+	case errRoomFull:
+		return "full"
+	}
+	return "other"
+}
+
+// classifyEnd names how a seated player's connection ended, from the error its
+// read loop ended with.
+//
+// A broken protocol is checked first: its explanation wraps the sentinel, and
+// an error carrying it is that whatever else it carries. The other side's
+// goodbye is the bare errClosed a close frame produces — the reader closes the
+// socket itself in answer, but returns the goodbye, not the closed socket. A
+// timeout is the read deadline running out on a silent peer. A closed network
+// connection is our own side: the room cut off a member who fell behind, or a
+// write to them failed. Anything else — the end of the stream, a reset — is a
+// peer that went away without a word.
+func classifyEnd(err error) string {
+	var netErr net.Error
+	switch {
+	case errors.Is(err, errProtocol):
+		return "protocol"
+	case errors.Is(err, errClosed):
+		return "goodbye"
+	case errors.Is(err, os.ErrDeadlineExceeded),
+		errors.As(err, &netErr) && netErr.Timeout():
+		return "idle"
+	case errors.Is(err, net.ErrClosed):
+		return "cut"
+	}
+	return "lost"
 }
 
 // newHTTPServer is the listening side main runs. Kept apart so the tests stand

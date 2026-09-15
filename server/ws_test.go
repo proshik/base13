@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/binary"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -142,8 +143,8 @@ func TestOversizedFrameIsRefused(t *testing.T) {
 		head := []byte{0x80 | opBinary, 0x80 | 127, 0, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF}
 		client.Write(head)
 	}()
-	if _, err := server.ReadMessage(); err == nil {
-		t.Fatal("an oversized frame must be refused")
+	if _, err := server.ReadMessage(); !errors.Is(err, errProtocol) {
+		t.Fatalf("an oversized frame must be refused as a broken protocol, got: %v", err)
 	}
 }
 
@@ -166,8 +167,8 @@ func TestFragmentsCannotAddUpPastTheCap(t *testing.T) {
 		}
 		client.Write(clientFrame(opContinuation, piece))
 	}()
-	if _, err := server.ReadMessage(); err == nil {
-		t.Fatal("a message stitched past the cap must be refused")
+	if _, err := server.ReadMessage(); !errors.Is(err, errProtocol) {
+		t.Fatalf("a message stitched past the cap must be refused as a broken protocol, got: %v", err)
 	}
 }
 
@@ -181,8 +182,8 @@ func TestOversizedControlFrameIsRefused(t *testing.T) {
 		client.Write(clientFrame(opPing, bytes.Repeat([]byte{1}, 126)))
 		client.Write(clientFrame(opBinary, []byte{9}))
 	}()
-	if _, err := server.ReadMessage(); err == nil {
-		t.Fatal("a control frame over 125 bytes must be refused")
+	if _, err := server.ReadMessage(); !errors.Is(err, errProtocol) {
+		t.Fatalf("a control frame over 125 bytes must be refused as a broken protocol, got: %v", err)
 	}
 }
 

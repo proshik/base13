@@ -68,7 +68,15 @@ const (
 	closeGoingAway = 1001
 )
 
+// errClosed is the other side's goodbye: it sent a close frame. Returned bare,
+// never wrapped, since callers compare it directly. Our own side closing the
+// socket reads back as net.ErrClosed instead, so the two never mix.
 var errClosed = errors.New("connection closed")
+
+// errProtocol marks a peer refused for breaking the standard or its limits
+// rather than for going away. It is wrapped under a readable explanation, so
+// the log says what was broken and the count still knows it was broken.
+var errProtocol = errors.New("protocol broken")
 
 // Conn is an accepted WebSocket connection. Reading is single-threaded;
 // writing is guarded by a mutex, because relaying happens from another
@@ -152,7 +160,7 @@ func (c *Conn) ReadMessage() ([]byte, error) {
 			continue
 		case opText, opBinary, opContinuation:
 			if len(assembled)+len(payload) > maxMessageSize {
-				return nil, fmt.Errorf("message of more than %d bytes", maxMessageSize)
+				return nil, fmt.Errorf("message of more than %d bytes: %w", maxMessageSize, errProtocol)
 			}
 			assembled = append(assembled, payload...)
 			if final {
@@ -160,7 +168,7 @@ func (c *Conn) ReadMessage() ([]byte, error) {
 			}
 			// Not the final frame — wait for the continuation and stitch.
 		default:
-			return nil, fmt.Errorf("unknown frame kind: %d", opcode)
+			return nil, fmt.Errorf("unknown frame kind %d: %w", opcode, errProtocol)
 		}
 	}
 }
@@ -193,12 +201,12 @@ func (c *Conn) readFrame() (final bool, opcode byte, payload []byte, err error) 
 		length = binary.BigEndian.Uint64(ext[:])
 	}
 	if length > maxMessageSize {
-		err = fmt.Errorf("frame of %d bytes is too large", length)
+		err = fmt.Errorf("frame of %d bytes is too large: %w", length, errProtocol)
 		return
 	}
 	// Control frames are small and whole by the standard.
 	if opcode >= opClose && (length > maxControlSize || !final) {
-		err = fmt.Errorf("control frame %d breaks the standard", opcode)
+		err = fmt.Errorf("control frame %d breaks the standard: %w", opcode, errProtocol)
 		return
 	}
 
@@ -247,7 +255,10 @@ func (c *Conn) writeFrame(opcode byte, payload []byte) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 	if c.closed.Load() {
-		return errClosed
+		// Our side closed it, the same as a write to the closed socket itself
+		// would report. Not errClosed: a pong that fails here would end the read
+		// loop looking like the other side's goodbye.
+		return net.ErrClosed
 	}
 	header := []byte{0x80 | opcode}
 	length := len(payload)
