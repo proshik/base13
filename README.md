@@ -83,6 +83,7 @@ game/          the Godot project: the whole game
   assets/      atlases, sounds, icon, splash — all generated from tools/
   tests/       GUT tests
 server/        room server and game hosting — in Go, knows nothing about the game
+deploy/        Prometheus scrape and alert rules, an Alloy example, the Grafana dashboard
 tools/         content generators, test runner, builds
 docs/          design and plans
 ```
@@ -107,6 +108,9 @@ Tests — together with the architectural boundary checks and the atlas verifica
 ```bash
 ./tools/test.sh
 ```
+
+The first run on a machine downloads the server's Go modules, checked against
+`server/go.sum`; after that they come from the module cache.
 
 Sprites are rebuilt from their text sources:
 
@@ -180,8 +184,9 @@ fourteen-inch laptop the window fits triple scale, and fullscreen fits quadruple
 
 ## Room server
 
-A separate Go program with not a single dependency — it builds into one file that you
-only have to copy onto a machine and run. It knows nothing about tanks: it sees a room
+A separate Go program. Its one outside dependency is Prometheus's own client library, for
+the metrics; the WebSocket layer is still written by hand. It builds into one file that
+you only have to copy onto a machine and run. It knows nothing about tanks: it sees a room
 code, the participants and the order of packets, and what those bytes mean is the game's
 business. So the same server will do for the next game too.
 
@@ -254,6 +259,8 @@ to bring up a second copy alongside:
 | `ADDR` | The whole address, if you need to bind to one interface |
 | `STATIC_DIR` | The folder with the game's files; empty means relay only |
 | `MAX_ROOMS` | How many rooms at once, 250 by default. A room at its caps is about 4 MB, so 250 is about a gigabyte in the worst case; past it newcomers see `SERVER IS BUSY` |
+| `METRICS_ADDR` | Where Prometheus reads the server's figures, for example `:27015`. Empty, the default, means no metrics listener at all. Its port must differ from the public one — compared as a number, so `027014` is still 27014 — or the server refuses to start |
+| `METRICS_TOKEN` | A bearer token the metrics listener demands, at least 16 bytes. Environment only: a flag would show in `ps` |
 
 On `SIGTERM` the server stops accepting and says goodbye to the players with a close
 frame instead of cutting the connection: otherwise the client spends half a minute
@@ -314,6 +321,133 @@ a thousand. With nginx that is `limit_conn` in a `server` block.
 Publish the container's port on the loopback only — `-p 127.0.0.1:27014:27014`. Only the
 proxy needs to reach it; published on every interface it answers from the outside over
 plain http, where the browser build refuses to start and nobody can tell why.
+
+### Metrics
+
+The server can show Prometheus and Grafana what stdout only hints at: connections and
+rooms against their limits, refusals and how connections ended, how many people sit down
+to play and how long they wait for a partner, and how the game actually runs for them —
+the round trip to each player, the server's own delay, and the pace players' games report.
+With the alert rules below, a full server or a desync reaches a person instead of a log.
+
+It is off unless asked for. The figures go out on a port of their own, never the public
+one: the proxy in front forwards every path, so `/metrics` on the public port would be on
+the internet. There it is a 404, and `tools/image.sh` checks that it stays one.
+
+```bash
+openssl rand -hex 32 > metrics-token          # once; readable only by whoever runs the container
+printf 'METRICS_TOKEN=%s\n' "$(cat metrics-token)" > metrics.env
+
+docker run -d --name base13 --restart unless-stopped \
+  -p 127.0.0.1:27014:27014 \
+  -p 127.0.0.1:27015:27015 -e METRICS_ADDR=:27015 \
+  --env-file metrics.env \
+  ghcr.io/proshik/base13:<version>
+```
+
+`127.0.0.1` in the second publish matters as much as in the first: without it the figures
+answer from outside. If Prometheus or Alloy runs in a container of its own, a docker network
+shared with `base13` is better still — it reaches `base13:27015` with nothing published at
+all. A binary without Docker listens on the loopback only: `METRICS_ADDR=127.0.0.1:27015`.
+Given an address beyond the machine and no token, it says so at startup.
+
+The token is needed even with the loopback publish. `-p 127.0.0.1:…` only limits where the
+port is published on the host; any other container on the same docker bridge reaches the
+container's address directly, published or not. With `METRICS_TOKEN` set, a scrape without
+`Authorization: Bearer <token>` gets a 401. The token goes in through the environment, not a
+flag, because flags show in `ps`, and through `--env-file`, not `-e METRICS_TOKEN=…`, so it
+does not stay in the shell's history.
+
+The image has no `EXPOSE` for the metrics port on purpose: `docker run -P` publishes every
+exposed port on every interface.
+
+Ready-made examples live in `deploy/`:
+
+| File | What it is |
+|---|---|
+| `deploy/prometheus/scrape.yml` | A Prometheus configuration with the `relay` job and the token read from a file |
+| `deploy/alloy/relay.alloy` | The same scrape through Grafana Alloy, sent on to Grafana Cloud or any remote-write store |
+| `deploy/prometheus/alerts.yml` | Alert rules: down, restarting, near the limits, adding lag, starved of CPU, desyncs |
+| `deploy/grafana/relay.json` | The dashboard: Now, Product, Lag and performance, Health, Resources |
+
+The job must be called `relay`: every rule and panel selects `job="relay"`. Alloy does not
+evaluate rules — with Alloy, load `alerts.yml` into the store's ruler. The dashboard imports
+through Dashboards → New → Import and asks which Prometheus to read. `server/deploy_test.go`
+checks that every figure these files name is one the server really exposes, so a renamed
+metric fails the tests instead of leaving a panel quietly empty.
+
+Point an uptime monitor at `/health`, not at `/`. A request for the page counts as a page
+load, and a monitor that checks every minute adds 1440 page loads a day that no player made.
+
+### What the server counts
+
+Events, and what players' games say about themselves. A seating, a pairing, a refusal, a
+relayed packet, a window of ticks reported by a player's side — each is added to a count or
+a histogram and forgotten. The server keeps no list of who did what.
+
+It never records an address, a room code, a seed, a game name, or any text a client sent as
+it was sent. Every label comes from a closed set the server defines: a platform it does not
+know becomes `other`, a version that is not three numbers becomes `other`, and only the ten
+most common versions among players seated right now get a series of their own. A test seats
+players in a room with a known code and seed and checks that neither appears in the scrape.
+
+It does not count people. There is no identifier to count by, deliberately: "players" is who
+is seated right now, a seating is an event, and one person who plays three matches is three
+seatings. How many different people played is not something this server can say.
+
+Figures from players' games — pace, waits, input delay, frame rate, desyncs, and the platform
+and version in the hello — are self-reported, and a client can forge them. The server reads a
+report into a fixed shape, clamps every figure to what a real window can be, takes at most one
+every four seconds per connection over time, and never relays, journals or logs it. That
+bounds what a forger can do; it does not stop a handful of fake clients from bending a
+distribution. The round trip is measured by the server's own pings, but a client can make its
+own figure worse by answering late.
+
+The metrics carry no room codes; the logs do. Every line about a room names its code and game
+(`room K7QX2M (private, game tanks): player 2 joined`), so stdout deserves the same care as the
+machine itself.
+
+### Reading the lag panels
+
+A match that stutters has one of three causes, and the Lag and performance row tells them
+apart with the same rule as the `[net]` lines:
+
+- **Speed below 95% with waits** — the game stood waiting for the partner's input: the
+  network. Look at the round trip and the worst gap for that platform.
+- **Speed below 95% without waits** — nothing was waited for, and the device still did not
+  keep up: the player's machine. The frame rate by platform shows which.
+- **Round trip high, worst gap low** — a slow but steady path. The input delay absorbs it:
+  the delay's p90 rises and the speed holds.
+- **Worst gap high, round trip normal** — jitter: Wi-Fi or a mobile link. The delay climbs
+  towards sixteen.
+- **Forward delay high** — the server itself. Check the Go scheduler latency and CPU first.
+
+The pace, verdict, frame rate and input delay panels describe play that was running. A client
+skips the report for a 300-tick period that held a freeze longer than 150 ms — a partner's
+hidden tab, a relay drop and return, its own hidden tab — so freezes do not show there. They
+show on the server's side: in the worst gap, and in disconnects and returns.
+
+What else the figures do not say:
+
+- `cut` disconnects include players whose socket failed on a write (a broken pipe, a reset),
+  not only players evicted for falling behind.
+- A code room's wait for a partner includes the time the code took to reach them. Time played
+  together and abandoned waits are observed when the empty room is swept, five to six minutes
+  late, and rooms still open at a restart are never observed.
+- The forward delay misses writes that hit the five-second write limit; those become
+  disconnects or evictions. Right after an eviction a burst of slow forwards is normal.
+  `relay_packets_total` counts packets read from players, not packets delivered.
+- The worst gap includes whole pauses in the middle of a connection — menus, the STATS screen,
+  a hidden tab. Read its buckets, not its mean.
+- Godot answers a ping once a frame, so desktop and native round trips include up to about
+  16 ms of the game loop; a browser answers at once.
+- The engine download time is a lower bound: socket and proxy buffers hide the rest, and behind
+  nginx with `proxy_buffering on` it measures only the hop to the proxy. HEAD and 206 count as
+  successful downloads; a 304 on the gzipped twin counts as `identity`.
+- iPadOS Safari sends a Macintosh user agent, so iPads count as `web`, not `web_ios`.
+- Versions are live players only, the ten most common plus `other`; while real traffic is low,
+  a few fake clients can rotate fake versions through the ten.
+- Single-player and LAN games never talk to the server, so they are not measured at all.
 
 ### Testing on two laptops
 
@@ -459,6 +593,8 @@ and downloading them every time takes longer than everything else put together.
   matchmaking, static hosting, Docker
 - [Deployment plan](docs/plans/2026-09-04-deployment.md) —
   the image on a public machine behind a proxy; next up, not yet done
+- [Metrics plan](docs/plans/2026-09-14-metrics.md) —
+  Prometheus figures, alerts and a dashboard for the room server; ships with the next image
 - [Homebrew cask plan](docs/plans/2026-09-04-homebrew-cask.md) —
   installation on macOS in one command; after the deployment
 - [CLAUDE.md](CLAUDE.md) — invariants that must not be broken

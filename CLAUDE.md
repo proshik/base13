@@ -18,10 +18,11 @@ Application identifier: `com.proshik.base13`.
 - Quick game and image design (stage 3.4): `docs/specs/2026-09-03-quick-game-design.md`
 - Deployment plan (next up): `docs/plans/2026-09-04-deployment.md`
 - Hardening plan (closed, gates the deployment's release): `docs/plans/2026-09-12-hardening.md`
-- Metrics plan (next after the deployment's release): `docs/plans/2026-09-14-metrics.md`
 - Homebrew cask plan (after the deployment): `docs/plans/2026-09-04-homebrew-cask.md`
 - Network lag plan (adaptive delay, carried between levels, gates the next release):
   `docs/plans/2026-09-14-network-lag.md`
+- Metrics plan (implemented on `feat/metrics`, not yet merged; ships in the next image, the
+  release the network lag plan gates): `docs/plans/2026-09-14-metrics.md`
 
 The work is split into four subprojects: **1** the core and the single-player game,
 **2** mobile platforms, **3** network co-op, **4** release to the stores.
@@ -69,6 +70,7 @@ history; everything after it does not.
 ```
 game/     the whole Godot project: project.godot, app.tscn and all the game code
 server/   the room server in Go — knows nothing about the game
+deploy/   Prometheus, Alloy and Grafana files for whoever runs the server
 tools/    content generators, test runner, builds
 docs/     design and plans
 build/    build output, not kept in the repository
@@ -132,6 +134,7 @@ Everything that knows about hardware and disk:
 | `game/platform/keyboard.gd`, `game/platform/gamepad.gd` | Sources of the same five bits |
 | `game/platform/score_store.gd` | The high score in `user://base13.cfg` |
 | `game/platform/window_scale.gd` | Picking an integer window scale for the display |
+| `game/platform/client_info.gd` | The platform and version the client names in its hello |
 
 The network — the general shape of a link and its two incarnations:
 
@@ -143,11 +146,15 @@ The network — the general shape of a link and its two incarnations:
 | `game/net/protocol.gd` | Packing button presses and hashes |
 | `game/net/lockstep.gd` | Laying input out over ticks, delay, hash comparison |
 | `game/net/net_input.gd` | The input source for a network match |
-| `server/*.go` | The server: WebSocket by hand, rooms, matchmaking, journal, game hosting |
+| `server/*.go` | The server: WebSocket by hand, rooms, matchmaking, journal, game hosting; outside code only for metrics: Prometheus's `client_golang` and what it brings |
+| `server/metrics.go` | Metric families over closed label sets, recording, and the collector that reads rooms and connections at scrape time |
+| `server/report.go` | Players' pace and desync reports: parsing, clamping, the allowance, the verdict |
+| `deploy/` | Prometheus scrape and alert rules, a Grafana Alloy example, the Grafana dashboard |
 | `Dockerfile`, `tools/image.sh` | The deployment image and the command that builds it |
 | `justfile` | An index of tasks on top of `tools/`; without it the scripts work as before |
 | `.github/workflows/ci.yml` | The test run on every push |
 | `.github/workflows/release.yml` | Cutting a release from master by hand: backend and desktop separately |
+| `tools/stamp_version.sh` | Writing the release version into `project.godot` before a build |
 | `Casks/base13.rb` | The Homebrew cask, source of truth; copied into the tap on release |
 
 Content generators — everything is our own, everything from text sources:
@@ -209,7 +216,8 @@ just test              # the same thing, if just is installed
 `tools/`, the scripts are called directly, and CI calls exactly those.
 
 The server tests require Go; without it they and the `.build/relay` build are skipped,
-and the client's network tests are marked pending, but the run does not fail.
+and the client's network tests are marked pending, but the run does not fail. The first run
+on a machine downloads the server's modules, so it needs the network once.
 
 Assets are assembled from text sources and verified against a fingerprint manifest. If
 you edited `tools/*_data.py`, rebuild them or the check will fail:
@@ -374,6 +382,30 @@ Rakes we have already stepped on:
   Package settings → Manage Actions access → add the repository, and then raise its role
   to Write: it is added as Read, which the settings describe as download only. Visibility
   is the package's own as well — it stayed private when the repository went public.
+- **A `ResponseWriter` wrapper without `ReadFrom` silently turns off sendfile.** The
+  engine is forty megabytes, and a wrapper that only counts the response still hides the
+  socket's `ReadFrom` from the file server, which then copies it through user space. The
+  recorder passes `ReadFrom` on, and a test checks that the socket is handed the file.
+- **The metrics port is compared with the public one by number, not by string.**
+  `027014` and `+27014` bind as 27014, and on macOS `127.0.0.1:27014` binds right next to
+  `:27014` — a proxy on loopback would land on the metrics.
+- **An older server relays a new text frame to the partner as a game packet.** So the
+  client sends reports only after the welcome announces `reports: true`.
+- **A test client the test stops referencing is closed by the garbage collector
+  mid-test**, and the server sees a player leave. `dial` keeps every socket alive with
+  `t.Cleanup` until the test ends.
+- **A worst-gap window that closed on one packet recorded a full-window stall as zero.**
+  The gap across a window boundary belongs to the window it ends in.
+- **A ping carrying a plain monotonic stamp tells every client the server's uptime.** The
+  payload carries a random per-process offset.
+- **CI must read `go.mod` and `go.sum` as committed**: `-mod=readonly` plus
+  `go mod tidy -diff`. `-mod=mod` repaired them in a throwaway checkout, and the first
+  failure would have come in the release's image build.
+- **Godot's `JSON.stringify` writes a float as `60.0`**, and `get_frames_per_second()` is
+  a float. The server reads a whole-valued float as a whole number.
+- **`go test` caches a result without looking at files outside `server/`.**
+  `deploy_test.go` reads `../deploy`, so an edited dashboard would pass on the result from
+  before the edit; `tools/test.sh` runs the Go tests with `-count=1`.
 
 ## Conventions
 

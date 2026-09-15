@@ -288,9 +288,21 @@ with `exec format error` — a message that says nothing about the cause.
 docker run -d --name base13 \
   --restart unless-stopped \
   -p 127.0.0.1:27014:27014 \
+  -p 127.0.0.1:27015:27015 -e METRICS_ADDR=:27015 \
+  --env-file /etc/base13/metrics.env \
   -e MAX_ROOMS=50 \
   ghcr.io/proshik/base13:0.4.0
 ```
+
+The second port is the metrics listener for Prometheus or Alloy on the same machine
+(README, "Metrics"); `0.4.0` predates it and ignores both lines, and the image that carries
+`docs/plans/2026-09-14-metrics.md` answers on it. It is published on the loopback for the
+same reason as the game's port, and it still wants a token: any container on the same
+docker bridge reaches an unpublished port directly. `/etc/base13/metrics.env` holds one
+line, `METRICS_TOKEN=<openssl rand -hex 32>`, readable only by root — a file rather than
+`-e METRICS_TOKEN=…`, which would stay in the shell's history. Prometheus reads the same
+token from its own file (`deploy/prometheus/scrape.yml`). Without metrics wanted, drop both
+lines; the listener stays off.
 
 `MAX_ROOMS=50` rather than the default 250, and the reason is memory: rooms are the only thing in the server that grows, each holding a journal of up to about 4 MB so a dropped player can come back. The default is sized for a gigabyte of journals, and this machine shares its memory with the proxy and the system. Fifty rooms at their caps are about 200 MB of journals, and Go's collector may let the process grow to about twice its live data, so budget 400 MB; an idle server takes under 2 MB. That is a hundred players; past that a newcomer sees `SERVER IS BUSY` and live matches are untouched. An empty room keeps its place for up to six minutes after the last player leaves, so with fifteen-minute matches expect about thirty-five live at once, not fifty. Raising it is a restart with another number, not a new image.
 

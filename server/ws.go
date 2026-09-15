@@ -1,11 +1,12 @@
 package main
 
-// WebSocket per RFC 6455, with no external dependencies.
+// WebSocket per RFC 6455, written by hand rather than taken from a library.
 //
-// The reason to write it by hand is the same as for this game's sprites and
-// sound: the repository holds what can be read, and the build does not depend
-// on somebody else's servers staying up. Not much is needed here — the
-// handshake, frame parsing and answering a ping.
+// Not much is needed here — the handshake, frame parsing and answering a ping —
+// and every byte a player sends passes through it, so it stays short enough to
+// read in full. The server does have one dependency, Prometheus's client library
+// for its metrics, fetched once and checked against go.sum; the socket layer is
+// not part of it.
 
 import (
 	"bufio"
