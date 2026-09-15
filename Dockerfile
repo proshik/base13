@@ -17,10 +17,15 @@ ARG TARGETARCH
 WORKDIR /src
 # There is not a single dependency, so there is no layer for downloading them either.
 COPY server/ ./
+# Declared as late as it can be, just above the one step that reads it: a new
+# version has to rebuild the binary and nothing before it. Unset, the image says
+# "dev", the same as a build made outside Docker, so a hand-built image is never
+# mistaken for a release.
+ARG VERSION=dev
 # No CGO — otherwise the binary would drag in libraries that scratch does not have,
 # and cross-compilation would need a toolchain for every target.
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-    go build -trimpath -ldflags="-s -w" -o /relay .
+    go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /relay .
 
 # The game's files are the same bytes for every architecture, so this stage has no
 # reason to be emulated either.
@@ -49,5 +54,8 @@ COPY --from=game /web /web
 # was placed. The default lives in the program, not in the image; it can be overridden
 # with either PORT or ADDR.
 ENV STATIC_DIR="/web"
+# Only the public port. The metrics port is left out on purpose: `docker run -P`
+# publishes every exposed port on all of the host's interfaces, and metrics must
+# be published by hand, onto loopback.
 EXPOSE 27014
 ENTRYPOINT ["/relay"]

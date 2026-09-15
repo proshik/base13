@@ -38,7 +38,24 @@ jobs:
     permissions:
       contents: write
       packages: write
+    # Scripts read the version from the environment, never as an expression. An
+    # expression inside run: is pasted into the script text before the shell sees
+    # it, so a version typed as `0.1.0"; curl … | sh; "` would run as commands; an
+    # environment variable stays a string, whatever it holds.
+    env:
+      VERSION: ${{ inputs.version }}
     steps:
+      # The version is a free-form workflow_dispatch input, so its shape is checked
+      # before it is trusted anywhere else — as an image tag, a zip name, a git tag.
+      # It is also the shape the server accepts for its own version: anything else
+      # would build fine and then report itself as "unknown".
+      - name: Check the version
+        run: |
+          if [[ ! "$VERSION" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+            echo "ERROR: version \"$VERSION\" must look like N.N.N, for example 0.1.0"
+            exit 1
+          fi
+
       # A release is cut from master and nowhere else: a tag on an arbitrary branch
       # would look like a real release while containing something unverified.
       - name: Check that this is master
@@ -54,8 +71,8 @@ jobs:
       - name: Check that the version is free
         if: inputs.target != 'server'
         run: |
-          if git ls-remote --exit-code --tags origin "refs/tags/v${{ inputs.version }}" >/dev/null 2>&1; then
-            echo "ERROR: tag v${{ inputs.version }} already exists. We do not overwrite what was released."
+          if git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" >/dev/null 2>&1; then
+            echo "ERROR: tag v$VERSION already exists. We do not overwrite what was released."
             exit 1
           fi
 
@@ -133,6 +150,7 @@ jobs:
             ${{ env.REGISTRY }}/${{ github.repository }}:${{ inputs.version }}
             ${{ env.REGISTRY }}/${{ github.repository }}:latest
             ${{ env.REGISTRY }}/${{ github.repository }}:sha-${{ github.sha }}
+          build-args: VERSION=${{ inputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -142,15 +160,59 @@ jobs:
       - name: Check the published image
         if: inputs.target != 'desktop'
         run: |
-          image="${REGISTRY}/${{ github.repository }}:${{ inputs.version }}"
-          docker run -d --rm --name check -e PORT=27014 -p 27014:27014 "$image"
+          image="${REGISTRY}/${{ github.repository }}:$VERSION"
+          # Metrics are switched on and published onto loopback only, the way a
+          # real deployment runs them, so the two checks below ask the image
+          # that is actually shipped rather than a server with metrics off.
+          docker run -d --rm --name check \
+            -e PORT=27014 -e METRICS_ADDR=:27015 \
+            -p 27014:27014 -p 127.0.0.1:27015:27015 \
+            "$image"
           for i in $(seq 1 40); do
             if curl -fsS --max-time 1 http://127.0.0.1:27014/health; then
               echo
-              curl -fsS http://127.0.0.1:27014/ | grep -q "BASE 13" \
-                && echo "the game page is served" && docker stop check && exit 0
-              echo "ERROR: the server answers but does not serve the game page"
-              docker stop check; exit 1
+              if ! curl -fsS http://127.0.0.1:27014/ | grep -q "BASE 13"; then
+                echo "ERROR: the server answers but does not serve the game page"
+                docker stop check; exit 1
+              fi
+              echo "the game page is served"
+
+              # The version reaches the binary through a build argument, and a
+              # slip on that path still builds: the release would call itself
+              # "dev" and be indistinguishable from any other on a dashboard.
+              if ! metrics="$(curl -fsS --max-time 2 http://127.0.0.1:27015/metrics)"; then
+                echo "ERROR: the server is up but its metrics port does not answer"
+                docker logs check; docker stop check; exit 1
+              fi
+              build_info="$(printf '%s\n' "$metrics" | grep '^relay_build_info{' || true)"
+              if [ -z "$build_info" ]; then
+                echo "ERROR: the metrics port answers but has no relay_build_info line"
+                docker logs check; docker stop check; exit 1
+              fi
+              # The brace or comma before the name matters: a bare version= also
+              # matches inside goversion=, and it would read the right label only
+              # for as long as the labels happen to be written in their present order.
+              got_version="$(printf '%s' "$build_info" | sed -n 's/.*[{,]version="\([^"]*\)".*/\1/p')"
+              if [ "$got_version" != "$VERSION" ]; then
+                echo "ERROR: the image reports version \"$got_version\" but was released as \"$VERSION\""
+                docker stop check; exit 1
+              fi
+              echo "the image reports version $got_version"
+
+              # The last moment to notice metrics on the public port before a
+              # live server hands them to anyone. Exactly 404, not merely "not
+              # 200": a redirect or a password prompt would still mean
+              # something there claims /metrics.
+              public_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 \
+                http://127.0.0.1:27014/metrics || true)"
+              if [ "$public_code" != "404" ]; then
+                echo "ERROR: /metrics on the public port answered $public_code instead of 404"
+                docker stop check; exit 1
+              fi
+              echo "the public port answers 404 for /metrics"
+
+              docker stop check
+              exit 0
             fi
             sleep 0.25
           done
@@ -162,17 +224,16 @@ jobs:
         run: |
           mkdir -p dist
           cd build
-          zip -qr ../dist/base13-${{ inputs.version }}-windows.zip windows
-          zip -qr ../dist/base13-${{ inputs.version }}-linux.zip linux
-          cp macos/base13.zip ../dist/base13-${{ inputs.version }}-macos.zip
-          zip -qr ../dist/base13-${{ inputs.version }}-web.zip web
+          zip -qr "../dist/base13-$VERSION-windows.zip" windows
+          zip -qr "../dist/base13-$VERSION-linux.zip" linux
+          cp macos/base13.zip "../dist/base13-$VERSION-macos.zip"
+          zip -qr "../dist/base13-$VERSION-web.zip" web
           ls -lh ../dist
 
       - name: Tag and create the release
         if: inputs.target != 'server'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ inputs.version }}
           IMAGE: ${{ env.REGISTRY }}/${{ github.repository }}
         run: |
           # The notes are written as a file rather than a string in the command:
