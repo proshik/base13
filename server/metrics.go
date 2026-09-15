@@ -92,6 +92,8 @@ type stats struct {
 	worstGaps   histogram    // over worstGapBuckets
 	forwards    histogram    // over forwardBuckets
 
+	reports clientReports // see report.go
+
 	responses     counterVec   // over httpResponseLabels
 	responseTimes histogramVec // over httpRouteLabels, httpResponseBuckets
 }
@@ -536,6 +538,7 @@ func (s *server) writeMetrics(w io.Writer) {
 	e.counter("relay_packets_total", "Game packets read from players and relayed.", counted.packets.Load())
 	e.counter("relay_packet_bytes_total", "Bytes of the game packets read from players and relayed.",
 		counted.packetBytes.Load())
+	writeReportFamilies(e, &counted.reports)
 	e.counterVec("relay_http_responses_total",
 		"Responses for the game's files, counted as each one finished: page for the page itself, "+
 			"wasm for the engine, other for the rest; by status class, and by whether the gzipped twin went out. "+

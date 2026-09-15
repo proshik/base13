@@ -68,6 +68,12 @@ type welcome struct {
 	Seed    uint32 `json:"seed,omitempty"`
 	Replay  int    `json:"replay,omitempty"` // how many journal records follow
 	Players int    `json:"players,omitempty"`
+	// The server takes a player's reports about its own game. A server from
+	// before reports hands whatever follows the hello to the partner as a game
+	// packet, and the partner's game would take a report for input; so a client
+	// reports only to a server whose welcome says this. A refusal seats nobody
+	// and leaves it out.
+	Reports bool `json:"reports,omitempty"`
 }
 
 type server struct {
@@ -83,6 +89,8 @@ type server struct {
 	readIdle   time.Duration
 	pingEvery  time.Duration
 	statsEvery time.Duration // how long a window of a stream's evenness lasts
+	// The least time between two pace reports taken from one connection.
+	reportEvery time.Duration
 	// Guards a render, not the numbers it reads — those have their own locks.
 	// A burst of scrapers waits in line instead of each paying to build the
 	// text from scratch at once; the zero value is already usable.
@@ -444,6 +452,13 @@ func (s *server) statsInterval() time.Duration {
 	return statsWindow
 }
 
+func (s *server) reportInterval() time.Duration {
+	if s.reportEvery > 0 {
+		return s.reportEvery
+	}
+	return defaultReportEvery
+}
+
 // pump carries a member's queue into the socket and pings on a timer. Sending
 // runs in its own goroutine: a slow member must not hold up those who read on
 // time.
@@ -537,13 +552,24 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 	var flow arrivals
 	every := s.statsInterval()
 	window := time.Now()
+	// What this connection's reports have had taken so far. Only this goroutine
+	// reads the connection, so it needs no lock.
+	var reports reportGate
 	for {
-		packet, err := conn.ReadMessage()
+		text, packet, err := conn.ReadMessageKind()
 		if err != nil {
 			s.hub.stats.disconnected(classifyEnd(err))
 			return
 		}
 		now := time.Now()
+		// Text after the hello is the player's own side reporting on its game.
+		// It goes to the counts and stops there: never to the partner, never
+		// into the journal, and not into the measures of the game's stream
+		// below, which a report is no part of.
+		if text {
+			s.takeReport(&reports, member, room, packet, now)
+			continue
+		}
 		flow.note(now)
 		if now.Sub(window) >= every {
 			log.Printf("room %s, slot %d: %.0fs, %d packets, worst gap %v",
@@ -646,6 +672,7 @@ func (s *server) greet(conn *Conn, r *http.Request) (*Room, *Member, error) {
 		Seed:    room.Seed,
 		Replay:  len(tail),
 		Players: room.Occupants(),
+		Reports: true,
 	}
 	body, _ := json.Marshal(answer)
 	if err := conn.WriteText(body); err != nil {

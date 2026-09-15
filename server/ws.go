@@ -146,39 +146,55 @@ func acceptKey(key string) string {
 	return base64.StdEncoding.EncodeToString(sum[:])
 }
 
-// ReadMessage returns the next data message. Control frames are handled
-// inside and never surface: the caller has no business with them.
+// ReadMessage returns the next data message, whichever kind of frame carried
+// it. Control frames are handled inside and never surface: the caller has no
+// business with them.
 func (c *Conn) ReadMessage() ([]byte, error) {
+	_, data, err := c.ReadMessageKind()
+	return data, err
+}
+
+// ReadMessageKind returns the next data message and whether it came as text.
+// After the hello a game packet comes as binary and a player's report about
+// its own game as text, and the two go different ways: one to the partner, the
+// other to the counts. A message split into frames is the kind its first frame
+// named; the frames after it carry no kind of their own.
+func (c *Conn) ReadMessageKind() (text bool, data []byte, err error) {
 	var assembled []byte
+	started := false
 	for {
 		final, opcode, payload, err := c.readFrame()
 		if err != nil {
-			return nil, err
+			return false, nil, err
 		}
 		switch opcode {
 		case opClose:
 			c.Close()
-			return nil, errClosed
+			return false, nil, errClosed
 		case opPing:
 			// Intermediaries read silence in reply to a ping as a broken link.
 			if err := c.writeFrame(opPong, payload); err != nil {
-				return nil, err
+				return false, nil, err
 			}
 			continue
 		case opPong:
 			c.pong(payload)
 			continue
 		case opText, opBinary, opContinuation:
+			if !started {
+				started = true
+				text = opcode == opText
+			}
 			if len(assembled)+len(payload) > maxMessageSize {
-				return nil, fmt.Errorf("message of more than %d bytes: %w", maxMessageSize, errProtocol)
+				return false, nil, fmt.Errorf("message of more than %d bytes: %w", maxMessageSize, errProtocol)
 			}
 			assembled = append(assembled, payload...)
 			if final {
-				return assembled, nil
+				return text, assembled, nil
 			}
 			// Not the final frame — wait for the continuation and stitch.
 		default:
-			return nil, fmt.Errorf("unknown frame kind %d: %w", opcode, errProtocol)
+			return false, nil, fmt.Errorf("unknown frame kind %d: %w", opcode, errProtocol)
 		}
 	}
 }

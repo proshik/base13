@@ -183,6 +183,9 @@ type Room struct {
 	// cap every packet is turned away, and the room is counted once, not once
 	// per packet.
 	journalCapped bool
+	// Set the first time a player says the two worlds parted, under mu. Both
+	// sides see the same moment and each says so, but it is one broken match.
+	desynced bool
 }
 
 func newRoom(code, game string, seed uint32) *Room {
@@ -253,6 +256,19 @@ func (r *Room) swept() {
 		return
 	}
 	r.stats.waitAbandoned(r.kind(), r.emptyAt.Sub(r.createdAt))
+}
+
+// noteDesync marks the room's match as desynced, and reports whether this call
+// was the one that marked it: the room is counted once, by whoever says it
+// first.
+func (r *Room) noteDesync() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.desynced {
+		return false
+	}
+	r.desynced = true
+	return true
 }
 
 // available reports whether the room is fit for matchmaking. Called under the

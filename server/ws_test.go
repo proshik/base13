@@ -95,6 +95,42 @@ func TestFragmentedMessageIsAssembled(t *testing.T) {
 	}
 }
 
+func TestAMessageSaysWhetherItCameAsText(t *testing.T) {
+	// A player's report about its own game comes as text and a game packet as
+	// binary, so the reader has to say which one it assembled. A message split
+	// into frames is the kind its first frame named, and a ping between the
+	// pieces is still answered without surfacing.
+	client, server := pipeConn(t)
+	defer client.Close()
+	go io.Copy(io.Discard, client) // takes the pong off the pipe
+	go func() {
+		client.Write(clientFrame(opBinary, []byte{1, 2}))
+		first := clientFrame(opText, []byte(`{"desy`))
+		first[0] &^= 0x80
+		client.Write(first)
+		client.Write(clientFrame(opPing, []byte("hey")))
+		client.Write(clientFrame(opContinuation, []byte(`nc":true}`)))
+		client.Write(clientFrame(opBinary, []byte{3}))
+	}()
+
+	for _, want := range []struct {
+		text bool
+		data []byte
+	}{
+		{false, []byte{1, 2}},
+		{true, []byte(`{"desync":true}`)},
+		{false, []byte{3}},
+	} {
+		text, data, err := server.ReadMessageKind()
+		if err != nil {
+			t.Fatalf("read failed: %v", err)
+		}
+		if text != want.text || !bytes.Equal(data, want.data) {
+			t.Fatalf("read %q as text %v, expected %q as text %v", data, text, want.data, want.text)
+		}
+	}
+}
+
 func TestPingIsAnsweredWithPong(t *testing.T) {
 	client, server := pipeConn(t)
 	go func() {
