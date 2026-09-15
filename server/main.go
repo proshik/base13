@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"io"
 	"log"
 	"mime"
 	"net"
@@ -287,9 +288,100 @@ func (s *server) routes(static string) *http.ServeMux {
 		})
 	})
 	if static != "" {
-		mux.Handle("/", noCacheIndex(precompressed(static, http.FileServer(http.Dir(static)))))
+		// Counting goes outermost, so it sees what actually went out: the
+		// twin's encoding, the redirect, the refusal. The relay and the health
+		// check stay outside it — one takes its socket away from the HTTP
+		// library, the other is polled by machines, not players.
+		mux.Handle("/", s.countResponses(noCacheIndex(precompressed(static, http.FileServer(http.Dir(static))))))
 	}
 	return mux
+}
+
+// countResponses counts every response for the game's files, by route, status
+// class and encoding, and observes how long each took. The time runs from the
+// moment the request reaches the handler to the moment the handler returns,
+// which for the engine is the whole transfer: how long a player waits for the
+// game to load.
+func (s *server) countResponses(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		began := time.Now()
+		route := routeOf(r.URL.Path)
+		recorder := &statusRecorder{ResponseWriter: w}
+		next.ServeHTTP(recorder, r)
+		// A handler that wrote nothing is sent 200 by the HTTP library.
+		recorder.record(http.StatusOK)
+		s.hub.stats.responded(route, recorder.status, recorder.gzip, time.Since(began))
+	})
+}
+
+// routeOf names what a path is to a player: the page they open, the engine
+// they wait on, or one of the small files around them. The page is the path
+// noCacheIndex treats as the page.
+func routeOf(path string) string {
+	switch {
+	case path == "/" || strings.HasSuffix(path, "/index.html"):
+		return "page"
+	case strings.HasSuffix(path, ".wasm"):
+		return "wasm"
+	}
+	return "other"
+}
+
+// statusRecorder notes the status a response went out with and whether its
+// body was gzipped, on the way to the real writer.
+type statusRecorder struct {
+	http.ResponseWriter
+	status int  // zero until the status is decided
+	gzip   bool // what Content-Encoding said at that moment
+}
+
+// record keeps the first status only: once the status line is written, a later
+// one never reaches the browser, and neither does a header set after it.
+func (r *statusRecorder) record(status int) {
+	if r.status != 0 {
+		return
+	}
+	r.status = status
+	r.gzip = r.ResponseWriter.Header().Get("Content-Encoding") == "gzip"
+}
+
+func (r *statusRecorder) WriteHeader(status int) {
+	r.record(status)
+	r.ResponseWriter.WriteHeader(status)
+}
+
+func (r *statusRecorder) Write(p []byte) (int, error) {
+	r.record(http.StatusOK)
+	return r.ResponseWriter.Write(p)
+}
+
+// ReadFrom is what keeps a file off user space. The file server copies a file
+// into the writer, and net/http's own writer takes that copy through its
+// ReadFrom straight to the socket, where the kernel sends the file itself.
+// Without this method the copy would find only Write on the recorder, and the
+// uncompressed engine would pass through a buffer for every player who gets
+// it, with nothing to show for it but the CPU. The gzipped twin does not reach
+// the kernel either way: the file server gives a response with
+// Content-Encoding no Content-Length, and a chunked body is copied.
+func (r *statusRecorder) ReadFrom(src io.Reader) (int64, error) {
+	r.record(http.StatusOK)
+	if inner, ok := r.ResponseWriter.(io.ReaderFrom); ok {
+		return inner.ReadFrom(src)
+	}
+	// Copied into the recorder with its ReadFrom hidden: handed the recorder
+	// itself, io.Copy would call this method again, and again.
+	return io.Copy(writerOnly{r}, src)
+}
+
+// Unwrap lets http.ResponseController reach what the real writer can do beyond
+// writing, such as flushing, which the recorder does not repeat.
+func (r *statusRecorder) Unwrap() http.ResponseWriter {
+	return r.ResponseWriter
+}
+
+// writerOnly hides every method of a writer but Write.
+type writerOnly struct {
+	io.Writer
 }
 
 // precompressed hands out a gzipped twin of a file when there is one and the

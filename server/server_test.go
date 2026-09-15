@@ -16,11 +16,16 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
+	"strings"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -1742,4 +1747,438 @@ func TestNoticesDoNotObserveForwardDelay(t *testing.T) {
 		`relay_forward_seconds_bucket{le="+Inf"}`: 1,
 		`relay_forward_seconds_bucket{le="1"}`:    1,
 	})
+}
+
+// --- counting page loads and engine downloads ---
+
+// serveStatic stands up a given server with the game files the way main does,
+// with its routes and its timeouts, on a listener the test may have wrapped.
+func serveStatic(t *testing.T, s *server, dir string, listener net.Listener) (addr string, stop func()) {
+	t.Helper()
+	if listener == nil {
+		var err error
+		if listener, err = net.Listen("tcp", "127.0.0.1:0"); err != nil {
+			t.Fatalf("server did not come up: %v", err)
+		}
+	}
+	httpServer := newHTTPServer(s.routes(dir))
+	go httpServer.Serve(listener)
+	return listener.Addr().String(), func() { httpServer.Close(); listener.Close() }
+}
+
+// fetch asks for one path with exactly the headers given and reads the whole
+// body. Go's own transport would ask for gzip and unpack it behind the test's
+// back, and would follow a redirect to the page it points at; this client does
+// neither, so the test sees what a browser is sent.
+func fetch(t *testing.T, addr, path string, header map[string]string) (*http.Response, []byte) {
+	t.Helper()
+	client := &http.Client{
+		Transport:     &http.Transport{DisableCompression: true},
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	defer client.CloseIdleConnections()
+	request, err := http.NewRequest(http.MethodGet, "http://"+addr+path, nil)
+	if err != nil {
+		t.Fatalf("no request for %s: %v", path, err)
+	}
+	for name, value := range header {
+		request.Header.Set(name, value)
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatalf("%s was not served: %v", path, err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("%s was cut short: %v", path, err)
+	}
+	return response, body
+}
+
+// responsesSeries names one series of relay_http_responses_total as it is
+// rendered, its labels sorted by name.
+func responsesSeries(route, class, encoding string) string {
+	return `relay_http_responses_total{class="` + class + `",encoding="` + encoding + `",route="` + route + `"}`
+}
+
+// allResponses is every series of relay_http_responses_total at zero.
+func allResponses() map[string]float64 {
+	series := map[string]float64{}
+	for _, route := range []string{"page", "wasm", "other"} {
+		for _, class := range []string{"2xx", "3xx", "4xx", "5xx"} {
+			for _, encoding := range []string{"gzip", "identity"} {
+				series[responsesSeries(route, class, encoding)] = 0
+			}
+		}
+	}
+	return series
+}
+
+// engineBytes is a stand-in for the engine: long enough that the file server
+// sends most of it past the first few hundred bytes it sniffs, which is where
+// a copy either reaches the socket's own ReadFrom or does not.
+func engineBytes(size int) []byte {
+	engine := make([]byte, size)
+	for i := range engine {
+		engine[i] = byte(i*7 + i/251)
+	}
+	return engine
+}
+
+func TestRoutesAreNamedByPath(t *testing.T) {
+	// The page is what noCacheIndex calls the page; the engine is the one file a
+	// player waits on. Everything else the web build loads is small enough to
+	// count together.
+	for _, c := range []struct{ path, route string }{
+		{"/", "page"},
+		{"/index.html", "page"},
+		{"/play/index.html", "page"},
+		{"/index.wasm", "wasm"},
+		{"/play/index.side.wasm", "wasm"},
+		{"/index.js", "other"},
+		{"/index.pck", "other"},
+		{"/index.wasm.gz", "other"},
+		{"/index.htm", "other"},
+		{"/favicon.png", "other"},
+		{"", "other"},
+	} {
+		if got := routeOf(c.path); got != c.route {
+			t.Errorf("%q is counted as %q, expected %q", c.path, got, c.route)
+		}
+	}
+}
+
+func TestPageLoadsAndWasmDownloadsAreCounted(t *testing.T) {
+	// How many opened the page, how many went on to download the engine, and
+	// whether the gzipped twin went out: counted by the server, because a player
+	// who gives up on the download never reaches the game to say so.
+	dir := writeStatic(t)
+	var packed bytes.Buffer
+	zw := gzip.NewWriter(&packed)
+	zw.Write([]byte("not-a-real-wasm"))
+	zw.Close()
+	if err := os.WriteFile(dir+"/index.wasm.gz", packed.Bytes(), 0o644); err != nil {
+		t.Fatalf("file was not written: %v", err)
+	}
+	s := &server{hub: NewHub()}
+	addr, stop := serveStatic(t, s, dir, nil)
+	defer stop()
+
+	// Every combination is there before anything is served: a series that only
+	// appears with its first response breaks rate() at that moment.
+	want := allResponses()
+	expectSeries(t, s, want)
+	rendered := 0
+	for _, line := range strings.Split(renderMetrics(s), "\n") {
+		if strings.HasPrefix(line, "relay_http_responses_total{") {
+			rendered++
+		}
+	}
+	if rendered != len(want) {
+		t.Fatalf("relay_http_responses_total has %d series, expected %d", rendered, len(want))
+	}
+
+	// Neither the relay nor the health check is a file: the socket is taken
+	// over by the relay, and the health check is polled by machines, not players.
+	if response, _ := fetch(t, addr, "/health", nil); response.StatusCode != http.StatusOK {
+		t.Fatalf("the health check answered %d", response.StatusCode)
+	}
+	if response, _ := fetch(t, addr, "/ws", nil); response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("a plain request to the relay answered %d", response.StatusCode)
+	}
+
+	steps := []struct {
+		path   string
+		header map[string]string
+		status int
+		series string
+	}{
+		{"/", nil, http.StatusOK, responsesSeries("page", "2xx", "identity")},
+		// The file server sends the page's own name back to the folder.
+		{"/index.html", nil, http.StatusMovedPermanently, responsesSeries("page", "3xx", "identity")},
+		{"/index.wasm", map[string]string{"Accept-Encoding": "gzip, deflate, br"}, http.StatusOK,
+			responsesSeries("wasm", "2xx", "gzip")},
+		{"/index.wasm", nil, http.StatusOK, responsesSeries("wasm", "2xx", "identity")},
+		{"/index.js", nil, http.StatusNotFound, responsesSeries("other", "4xx", "identity")},
+	}
+	var lastModified string
+	for _, step := range steps {
+		response, _ := fetch(t, addr, step.path, step.header)
+		if response.StatusCode != step.status {
+			t.Fatalf("%s answered %d, expected %d", step.path, response.StatusCode, step.status)
+		}
+		if step.path == "/index.wasm" {
+			lastModified = response.Header.Get("Last-Modified")
+		}
+		want[step.series]++
+	}
+	// A browser holding the engine already asks whether it changed, and is told
+	// it did not: a visit that downloads nothing, told apart from one that does.
+	cached, _ := fetch(t, addr, "/index.wasm", map[string]string{"If-Modified-Since": lastModified})
+	if cached.StatusCode != http.StatusNotModified {
+		t.Fatalf("a cached engine was answered %d", cached.StatusCode)
+	}
+	want[responsesSeries("wasm", "3xx", "identity")]++
+
+	// Counted as each handler returns, which a client that already has the
+	// last byte may see a moment before.
+	eventually(t, func() bool {
+		text := renderMetrics(s)
+		for series, value := range want {
+			if raw, found := seriesValue(text, series); !found || raw != strconv.FormatFloat(value, 'f', -1, 64) {
+				return false
+			}
+		}
+		return true
+	})
+	expectSeries(t, s, want)
+
+	// The statuses the file server rarely gives, and the moment the encoding
+	// is read, pinned on the wrapper alone.
+	bare := &server{hub: NewHub()}
+	for _, c := range []struct {
+		why     string
+		path    string
+		handler http.HandlerFunc
+		series  string
+	}{
+		{"a handler that writes nothing is sent 200", "/", func(http.ResponseWriter, *http.Request) {},
+			responsesSeries("page", "2xx", "identity")},
+		{"a failure is 5xx", "/index.wasm", func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}, responsesSeries("wasm", "5xx", "identity")},
+		{"the first status is the one sent", "/index.js", func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+			w.WriteHeader(http.StatusInternalServerError)
+		}, responsesSeries("other", "4xx", "identity")},
+		{"gzip set before the body goes out is gzip", "/index.wasm", func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Encoding", "gzip")
+			w.Write([]byte{0x1f, 0x8b})
+		}, responsesSeries("wasm", "2xx", "gzip")},
+		{"gzip set after the status went out never reached the browser", "/index.wasm",
+			func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				w.Header().Set("Content-Encoding", "gzip")
+			}, responsesSeries("wasm", "2xx", "identity")},
+		{"anything below 300 is 2xx", "/", func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusSwitchingProtocols)
+		}, responsesSeries("page", "2xx", "identity")},
+	} {
+		before := metricValue(t, bare, c.series)
+		bare.countResponses(c.handler).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, c.path, nil))
+		if after := metricValue(t, bare, c.series); after != before+1 {
+			t.Errorf("%s: %s went from %v to %v", c.why, c.series, before, after)
+		}
+	}
+	checkExposition(t, renderMetrics(s))
+}
+
+func TestRangeRequestsStillWorkThroughTheRecorder(t *testing.T) {
+	// A browser resuming a broken download asks for the rest of the engine by
+	// range. The file server answers that itself, and the wrapper that counts
+	// must neither get in its way nor count a partial answer as anything but a
+	// success.
+	dir := t.TempDir()
+	engine := engineBytes(64 << 10)
+	if err := os.WriteFile(dir+"/index.wasm", engine, 0o644); err != nil {
+		t.Fatalf("file was not written: %v", err)
+	}
+	s := &server{hub: NewHub()}
+	addr, stop := serveStatic(t, s, dir, nil)
+	defer stop()
+
+	head, body := fetch(t, addr, "/index.wasm", map[string]string{"Range": "bytes=0-3"})
+	if head.StatusCode != http.StatusPartialContent {
+		t.Fatalf("a range was answered %d", head.StatusCode)
+	}
+	if !bytes.Equal(body, engine[:4]) {
+		t.Fatalf("the first four bytes came as %v, expected %v", body, engine[:4])
+	}
+	if got := head.Header.Get("Content-Range"); got != "bytes 0-3/65536" {
+		t.Fatalf("the range was described as %q", got)
+	}
+
+	// A range long past what the file server sniffs, so it travels the path a
+	// real resumed download takes.
+	tail, body := fetch(t, addr, "/index.wasm", map[string]string{"Range": "bytes=1000-40999"})
+	if tail.StatusCode != http.StatusPartialContent || !bytes.Equal(body, engine[1000:41000]) {
+		t.Fatalf("a long range was answered %d with %d bytes, not the %d asked for",
+			tail.StatusCode, len(body), 40000)
+	}
+
+	eventually(t, func() bool {
+		return metricValue(t, s, responsesSeries("wasm", "2xx", "identity")) == 2
+	})
+	want := allResponses()
+	want[responsesSeries("wasm", "2xx", "identity")] = 2
+	expectSeries(t, s, want)
+}
+
+// readFromWriter is a response writer that, like net/http's own, can take a
+// whole reader at once, and counts how often it is asked to.
+type readFromWriter struct {
+	header    http.Header
+	body      bytes.Buffer
+	readFroms int
+}
+
+func (w *readFromWriter) Header() http.Header         { return w.header }
+func (w *readFromWriter) Write(p []byte) (int, error) { return w.body.Write(p) }
+func (w *readFromWriter) WriteHeader(int)             {}
+
+func (w *readFromWriter) ReadFrom(src io.Reader) (int64, error) {
+	w.readFroms++
+	return w.body.ReadFrom(src)
+}
+
+// sendfileConn is the server's end of a connection that notes every ReadFrom
+// carrying a file behind a limit — the shape the kernel's sendfile takes —
+// before handing it to the real socket.
+type sendfileConn struct {
+	*net.TCPConn
+	files *atomic.Int32
+}
+
+func (c sendfileConn) ReadFrom(src io.Reader) (int64, error) {
+	if limited, ok := src.(*io.LimitedReader); ok {
+		if _, ok := limited.R.(syscall.Conn); ok {
+			c.files.Add(1)
+		}
+	}
+	return c.TCPConn.ReadFrom(src)
+}
+
+type sendfileListener struct {
+	net.Listener
+	files *atomic.Int32
+}
+
+func (l sendfileListener) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	return sendfileConn{conn.(*net.TCPConn), l.files}, nil
+}
+
+func TestTheRecorderKeepsTheSendfilePath(t *testing.T) {
+	// net/http hands a file to the kernel only when the copy reaches its
+	// writer's ReadFrom. A wrapper without one turns that into a copy through
+	// user space, forty megabytes per player, and nothing on the page would
+	// look any different.
+	inner := &readFromWriter{header: http.Header{}}
+	recorder := &statusRecorder{ResponseWriter: inner}
+	var w http.ResponseWriter = recorder
+	if _, ok := w.(io.ReaderFrom); !ok {
+		t.Fatal("the recorder is not an io.ReaderFrom: every copy through it goes through user space")
+	}
+	// The shape the file server copies with: io.CopyN, a reader behind a limit.
+	if _, err := io.CopyN(w, strings.NewReader("the engine"), 10); err != nil {
+		t.Fatalf("the copy failed: %v", err)
+	}
+	if inner.readFroms != 1 || inner.body.String() != "the engine" {
+		t.Fatalf("the inner writer's ReadFrom was called %d times and got %q", inner.readFroms, inner.body.String())
+	}
+	if recorder.status != http.StatusOK {
+		t.Fatalf("a body sent with no status written is sent as 200, recorded %d", recorder.status)
+	}
+
+	// An inner writer that cannot take a reader still gets the bytes, and the
+	// copy does not come back round to the recorder's own ReadFrom forever.
+	plain := httptest.NewRecorder()
+	fallback := &statusRecorder{ResponseWriter: plain}
+	if _, err := io.CopyN(fallback, strings.NewReader("the engine"), 10); err != nil {
+		t.Fatalf("the copy without a ReadFrom failed: %v", err)
+	}
+	if plain.Body.String() != "the engine" || fallback.status != http.StatusOK {
+		t.Fatalf("the copy without a ReadFrom gave %q, recorded %d", plain.Body.String(), fallback.status)
+	}
+	// And whatever the inner writer can do beyond writing is still reachable.
+	if err := http.NewResponseController(fallback).Flush(); err != nil || !plain.Flushed {
+		t.Fatalf("a flush did not reach the writer inside: %v", err)
+	}
+
+	// Through the real server, the engine reaches the socket's ReadFrom with the
+	// file itself behind a limit.
+	//
+	// The gzipped twin is left out on purpose: http.ServeContent writes no
+	// Content-Length when Content-Encoding is set, so the twin goes out chunked
+	// and net/http copies it through user space whatever wraps the writer. That
+	// was so before the recorder, and it is not the recorder's to change.
+	dir := t.TempDir()
+	engine := engineBytes(64 << 10)
+	if err := os.WriteFile(dir+"/index.wasm", engine, 0o644); err != nil {
+		t.Fatalf("file was not written: %v", err)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("server did not come up: %v", err)
+	}
+	var files atomic.Int32
+	s := &server{hub: NewHub()}
+	addr, stop := serveStatic(t, s, dir, sendfileListener{listener, &files})
+	defer stop()
+
+	if _, body := fetch(t, addr, "/index.wasm", nil); !bytes.Equal(body, engine) {
+		t.Fatalf("the engine came back as %d bytes, not %d", len(body), len(engine))
+	}
+	if got := files.Load(); got != 1 {
+		t.Fatalf("the socket was handed the file %d times for one download, expected once", got)
+	}
+}
+
+func TestResponseDurationIsObservedPerRoute(t *testing.T) {
+	// How long a player waits for the engine is the one number here a player
+	// feels. Each response is observed under its own route, so a slow engine
+	// is not averaged away by a quick page.
+	dir := writeStatic(t)
+	s := &server{hub: NewHub()}
+	addr, stop := serveStatic(t, s, dir, nil)
+	defer stop()
+	counts := func() map[string]float64 {
+		return map[string]float64{
+			"page":  metricValue(t, s, `relay_http_response_seconds_count{route="page"}`),
+			"wasm":  metricValue(t, s, `relay_http_response_seconds_count{route="wasm"}`),
+			"other": metricValue(t, s, `relay_http_response_seconds_count{route="other"}`),
+		}
+	}
+	expected := map[string]float64{"page": 0, "wasm": 0, "other": 0}
+	if got := counts(); !maps.Equal(got, expected) {
+		t.Fatalf("before any request the counts are %v", got)
+	}
+	for _, step := range []struct{ path, route string }{
+		{"/", "page"},
+		{"/index.wasm", "wasm"},
+		{"/index.wasm", "wasm"},
+		{"/favicon.png", "other"},
+	} {
+		fetch(t, addr, step.path, nil)
+		expected[step.route]++
+		eventually(t, func() bool { return counts()[step.route] == expected[step.route] })
+		if got := counts(); !maps.Equal(got, expected) {
+			t.Fatalf("after %s the counts are %v, expected %v", step.path, got, expected)
+		}
+	}
+	checkExposition(t, renderMetrics(s))
+
+	// The time runs from entering the wrapper to the handler's return: for the
+	// engine, the whole transfer, not only the moment the status went out.
+	slow := &server{hub: NewHub()}
+	handler := slow.countResponses(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		time.Sleep(30 * time.Millisecond)
+		w.Write([]byte("the rest of the engine"))
+	}))
+	began := time.Now()
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/index.wasm", nil))
+	took := time.Since(began)
+	expectSeries(t, slow, map[string]float64{
+		`relay_http_response_seconds_count{route="wasm"}`: 1,
+		`relay_http_response_seconds_count{route="page"}`: 0,
+	})
+	if got := metricValue(t, slow, `relay_http_response_seconds_sum{route="wasm"}`); got < 0.03 || got > took.Seconds() {
+		t.Fatalf("a response that took thirty milliseconds to write was observed as %vs, "+
+			"expected at least 0.03s and at most the %v the test watched pass", got, took)
+	}
 }

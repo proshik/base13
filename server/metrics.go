@@ -91,6 +91,9 @@ type stats struct {
 	rtt         histogramVec // over platformLabels, rttBuckets
 	worstGaps   histogram    // over worstGapBuckets
 	forwards    histogram    // over forwardBuckets
+
+	responses     counterVec   // over httpResponseLabels
+	responseTimes histogramVec // over httpRouteLabels, httpResponseBuckets
 }
 
 // Why a connection was refused. Both limits reach the client as the same
@@ -162,6 +165,26 @@ var worstGapBuckets = durationBuckets(0.05, 0.1, 0.25, 0.5, 1, 2.5)
 // The server's own delay, from half a millisecond, a relay with nothing in its
 // way, to a second, a socket that barely takes anything.
 var forwardBuckets = durationBuckets(0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1)
+
+// What a response for the game's files was to a player: the page they open,
+// the engine they wait on, or one of the small files around them.
+var httpRoutes = []string{"page", "wasm", "other"}
+
+var httpRouteLabels = labelSet{{"route", httpRoutes}}
+
+// A response by route, by the class of its status, and by whether the gzipped
+// twin went out. The class is enough to tell a download from a cached engine or
+// a missing file, and a status code of its own per series would multiply them
+// for nothing.
+var httpResponseLabels = labelSet{
+	{"route", httpRoutes},
+	{"class", []string{"2xx", "3xx", "4xx", "5xx"}},
+	{"encoding", []string{"gzip", "identity"}},
+}
+
+// A response from a tenth of a second, a page or a cached engine, to a minute,
+// an engine downloaded over a slow mobile link.
+var httpResponseBuckets = durationBuckets(0.1, 0.5, 1, 2.5, 5, 10, 30, 60)
 
 // How many versions get a series of their own among the players seated right
 // now. Past it they are other: releases pile up over the years, and a script
@@ -314,6 +337,36 @@ func (s *stats) observeForward(took time.Duration) {
 		return
 	}
 	s.forwards.observeDuration(forwardBuckets, took)
+}
+
+// responded counts one response for the game's files, under its route, the
+// class of its status and whether it went out gzipped, and observes how long it
+// took.
+func (s *stats) responded(route string, status int, gzip bool, took time.Duration) {
+	if s == nil {
+		return
+	}
+	encoding := "identity"
+	if gzip {
+		encoding = "gzip"
+	}
+	s.responses.inc(httpResponseLabels, route, statusClass(status), encoding)
+	s.responseTimes.at(httpRouteLabels, route).observeDuration(httpResponseBuckets, took)
+}
+
+// statusClass folds a status into its class. Below 300 counts as a success:
+// nothing behind the wrapper sends an interim 1xx status. From 500 up is a
+// failure, however far up.
+func statusClass(status int) string {
+	switch {
+	case status < 300:
+		return "2xx"
+	case status < 400:
+		return "3xx"
+	case status < 500:
+		return "4xx"
+	}
+	return "5xx"
 }
 
 // livePlayers counts whoever is seated right now, by platform and by version
@@ -483,6 +536,17 @@ func (s *server) writeMetrics(w io.Writer) {
 	e.counter("relay_packets_total", "Game packets read from players and relayed.", counted.packets.Load())
 	e.counter("relay_packet_bytes_total", "Bytes of the game packets read from players and relayed.",
 		counted.packetBytes.Load())
+	e.counterVec("relay_http_responses_total",
+		"Responses for the game's files, counted as each one finished: page for the page itself, "+
+			"wasm for the engine, other for the rest; by status class, and by whether the gzipped twin went out. "+
+			"A download the player abandons counts under the status it began with. "+
+			"Zero on a server that serves no game files.",
+		httpResponseLabels, &counted.responses)
+	e.histogramVec("relay_http_response_seconds",
+		"How long a response for the game's files took, from the server starting on the request to the last byte "+
+			"handed to the connection, by route: for wasm, how long a player waits for the engine to download. "+
+			"A download the player abandons is observed as far as it went.",
+		httpRouteLabels, httpResponseBuckets, &counted.responseTimes)
 }
 
 // How much a single vector or histogram can hold. The storage is a fixed array
