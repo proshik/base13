@@ -1480,3 +1480,161 @@ func TestASeatingIsCountedOnlyOnceTheWelcomeWentOut(t *testing.T) {
 		}
 	}
 }
+
+func TestRelayedPacketsAndBytesAreCounted(t *testing.T) {
+	// Traffic is what the server exists to carry: every game packet a player
+	// sends is counted once, with its size, as it is relayed. The hello is
+	// housekeeping, and a catch-up replays what was already counted; neither is
+	// new traffic. A packet sent while the partner has not come yet is relayed
+	// all the same — into the journal they will catch up from.
+	s := &server{hub: NewHub()}
+	addr, stop := serve(t, s)
+	defer stop()
+	traffic := func(packets, bytes float64) map[string]float64 {
+		return map[string]float64{"relay_packets_total": packets, "relay_packet_bytes_total": bytes}
+	}
+	expectSeries(t, s, traffic(0, 0))
+
+	host := dial(t, addr)
+	host.sendJSON(t, hello{Action: "create", Game: "tanks", Seed: 1})
+	code := host.welcome(t).Code
+	host.send(t, []byte{1, 0, 0, 0, 0, 31})
+	eventually(t, func() bool { return metricValue(t, s, "relay_packets_total") == 1 })
+	expectSeries(t, s, traffic(1, 6))
+
+	guest := dial(t, addr)
+	guest.sendJSON(t, hello{Action: "join", Game: "tanks", Code: code})
+	guest.welcome(t)
+	guest.receive(t) // the packet sent before they came, from the journal
+
+	host.send(t, []byte{2, 0, 0, 0, 0, 31})
+	guest.receive(t)
+	guest.send(t, []byte{2, 1, 0, 0, 0, 16, 0, 0, 7})
+	host.receive(t)
+	eventually(t, func() bool { return metricValue(t, s, "relay_packets_total") == 3 })
+	expectSeries(t, s, traffic(3, 21))
+	checkExposition(t, renderMetrics(s))
+}
+
+func TestWorstGapIsObservedEachWindow(t *testing.T) {
+	// The worst gap in a player's stream is what their partner sees as a frozen
+	// frame. It is observed once a window, where the log line reports it, and the
+	// window then starts over: a stall long past must not colour every window
+	// that follows it.
+	s := &server{hub: NewHub(), statsEvery: 50 * time.Millisecond}
+	addr, stop := serve(t, s)
+	defer stop()
+	bucket := func(le string) float64 {
+		return metricValue(t, s, `relay_packet_gap_worst_seconds_bucket{le="`+le+`"}`)
+	}
+	stalls := func() float64 { return bucket("0.25") - bucket("0.1") }
+
+	host := dial(t, addr)
+	host.sendJSON(t, hello{Action: "create", Game: "tanks", Seed: 1})
+	code := host.welcome(t).Code
+	guest := dial(t, addr)
+	guest.sendJSON(t, hello{Action: "join", Game: "tanks", Code: code})
+	guest.welcome(t)
+	expectSeries(t, s, map[string]float64{"relay_packet_gap_worst_seconds_count": 0})
+
+	// Two packets back to back first: should the first of them close a window
+	// the server opened while the guest was still joining, the second is there
+	// to measure the stall from.
+	packet := []byte{1, 0, 0, 0, 0, 31}
+	host.send(t, packet)
+	host.send(t, packet)
+	guest.receive(t)
+	guest.receive(t)
+	time.Sleep(200 * time.Millisecond)
+	host.send(t, packet)
+	guest.receive(t)
+	eventually(t, func() bool { return stalls() == 1 })
+	calm := bucket("0.1")
+
+	// Then an even stream across a few windows: each reports its own worst gap,
+	// a short one, and the stall is not reported again.
+	for range 15 {
+		time.Sleep(10 * time.Millisecond)
+		host.send(t, packet)
+		guest.receive(t)
+	}
+	eventually(t, func() bool { return bucket("0.1") > calm })
+	if got := stalls(); got != 1 {
+		t.Fatalf("%v windows reported a gap of a fifth of a second, expected only the one that held it", got)
+	}
+	checkExposition(t, renderMetrics(s))
+}
+
+func TestForwardDelayIsObservedAfterTheWrite(t *testing.T) {
+	// The server's own part of the lag runs from the moment a packet is relayed
+	// to the moment it is in the partner's socket. A socket slow to take it is
+	// part of that — the packet has not gone anywhere until the write returns —
+	// so the delay is observed after the write, not when the packet is picked up.
+	s := &server{hub: NewHub()}
+	room, _ := s.hub.Create("tanks", 1)
+	host, _ := room.Join()
+	guest, _ := room.Join()
+	partner, conn := pipeConn(t)
+	done := make(chan struct{})
+	go func() { pump(conn, guest, time.Hour); close(done) }()
+	expectSeries(t, s, map[string]float64{"relay_forward_seconds_count": 0})
+
+	packet := []byte{1, 0, 0, 0, 0, 31}
+	room.Broadcast(host, packet)
+	// The pipe takes the bytes only when they are read, and they are read only
+	// thirty milliseconds after the packet was relayed.
+	read := make(chan error, 1)
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		_, err := io.ReadFull(partner, make([]byte, 2+len(packet)))
+		read <- err
+	}()
+	if err := <-read; err != nil {
+		t.Fatalf("the packet never reached the partner: %v", err)
+	}
+	eventually(t, func() bool { return metricValue(t, s, "relay_forward_seconds_count") == 1 })
+	expectSeries(t, s, map[string]float64{
+		`relay_forward_seconds_bucket{le="0.01"}`: 0,
+		`relay_forward_seconds_bucket{le="0.05"}`: 1,
+	})
+	expectBetween(t, s, "relay_forward_seconds_sum", 0.03, 1)
+
+	// A write that fails put nothing into anybody's socket: no delay to report.
+	partner.Close()
+	room.Broadcast(host, packet)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("the writer did not stop when the write failed")
+	}
+	expectSeries(t, s, map[string]float64{"relay_forward_seconds_count": 1})
+	checkExposition(t, renderMetrics(s))
+}
+
+func TestNoticesDoNotObserveForwardDelay(t *testing.T) {
+	// A notice about the room is not the game's traffic, and nobody's frame
+	// waits on it. Only a game packet the room stamped as it relayed it is
+	// observed; one with no stamp has no moment to measure from, and observed
+	// anyway it would report a delay from the start of time.
+	s := &server{hub: NewHub()}
+	room, _ := s.hub.Create("tanks", 1)
+	host, _ := room.Join()
+	guest, _ := room.Join()
+	partner, conn := pipeConn(t)
+	defer partner.Close()
+	go io.Copy(io.Discard, partner)
+	go pump(conn, guest, time.Hour)
+
+	room.Notify(host, event("joined", 2))
+	guest.Send <- outgoing{Text: true, Data: event("joined", 2), At: time.Now()}
+	guest.Send <- outgoing{Data: []byte{7}}
+	// Last in the queue, a packet the room relayed. The writer takes the queue in
+	// order, so once it is observed, everything before it has been written.
+	room.Broadcast(host, []byte{1, 0, 0, 0, 0, 31})
+	eventually(t, func() bool { return metricValue(t, s, "relay_forward_seconds_count") >= 1 })
+	expectSeries(t, s, map[string]float64{
+		"relay_forward_seconds_count":             1,
+		`relay_forward_seconds_bucket{le="+Inf"}`: 1,
+		`relay_forward_seconds_bucket{le="1"}`:    1,
+	})
+}

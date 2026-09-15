@@ -79,8 +79,9 @@ type server struct {
 	// the room cap, plus headroom for those still saying hello.
 	maxConns int
 	// Zero means the defaults; tests shorten them.
-	readIdle  time.Duration
-	pingEvery time.Duration
+	readIdle   time.Duration
+	pingEvery  time.Duration
+	statsEvery time.Duration // how long a window of a stream's evenness lasts
 	// Guards a render, not the numbers it reads — those have their own locks.
 	// A burst of scrapers waits in line instead of each paying to build the
 	// text from scratch at once; the zero value is already usable.
@@ -344,6 +345,13 @@ func (s *server) pingInterval() time.Duration {
 	return defaultPingEvery
 }
 
+func (s *server) statsInterval() time.Duration {
+	if s.statsEvery > 0 {
+		return s.statsEvery
+	}
+	return statsWindow
+}
+
 // pump carries a member's queue into the socket and pings on a timer. Sending
 // runs in its own goroutine: a slow member must not hold up those who read on
 // time.
@@ -372,6 +380,13 @@ func pump(conn *Conn, member *Member, every time.Duration) {
 			if err != nil {
 				conn.Close()
 				return
+			}
+			// Observed only once the write returned: until the socket took the
+			// bytes the packet was still the server's to deliver, and a
+			// partner slow to take it off the wire is part of the delay. A
+			// notice is not the game's traffic, and nothing stamped it.
+			if !packet.Text && !packet.At.IsZero() {
+				member.stats.observeForward(time.Since(packet.At))
 			}
 		case <-ping.C:
 			if err := conn.Ping(); err != nil {
@@ -422,6 +437,7 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 	// frame is born from a gap between packets, so we watch the worst gap
 	// rather than the average.
 	var flow arrivals
+	every := s.statsInterval()
 	window := time.Now()
 	for {
 		packet, err := conn.ReadMessage()
@@ -431,13 +447,15 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 		}
 		now := time.Now()
 		flow.note(now)
-		if now.Sub(window) >= statsWindow {
+		if now.Sub(window) >= every {
 			log.Printf("room %s, slot %d: %.0fs, %d packets, worst gap %v",
 				room.Code, member.Slot, now.Sub(window).Seconds(),
 				flow.count(), flow.worstGap().Round(time.Millisecond))
+			s.hub.stats.observeWorstGap(flow.worstGap())
 			flow.forget()
 			window = now
 		}
+		s.hub.stats.relayed(len(packet))
 		room.Broadcast(member, packet)
 	}
 }

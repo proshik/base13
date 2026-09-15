@@ -65,9 +65,13 @@ func reasonCode(err error) string {
 // outgoing is what goes out to a member. The frame kind travels with the
 // data: a housekeeping message and a game packet share one queue, and the
 // order between them must be preserved.
+//
+// At is when the room took a game packet to relay, so the writer can tell how
+// long it spent getting to the socket. A notice leaves it zero.
 type outgoing struct {
 	Text bool
 	Data []byte
+	At   time.Time
 }
 
 // Member is one occupant of a room. Sending goes through a channel rather
@@ -298,6 +302,9 @@ func (r *Room) Leave(member *Member) {
 // the sender: the client already has its own input, and echoing it back is
 // wasted traffic and confusion.
 func (r *Room) Broadcast(from *Member, data []byte) {
+	// One reading for every recipient, taken before the lock: a wait for the
+	// room is the server's own delay as much as a slow socket is.
+	at := time.Now()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.journal.count() < maxJournal && r.journal.size()+len(data) <= maxJournalBytes {
@@ -315,7 +322,7 @@ func (r *Room) Broadcast(from *Member, data []byte) {
 			continue
 		}
 		select {
-		case member.Send <- outgoing{Data: data}:
+		case member.Send <- outgoing{Data: data, At: at}:
 		default:
 			// The queue overflowed — this member is hopelessly behind. Cutting
 			// their connection is more honest than slowing the game for
@@ -324,6 +331,7 @@ func (r *Room) Broadcast(from *Member, data []byte) {
 			before := len(r.members)
 			delete(r.members, slot)
 			r.occupancyChanged(before)
+			r.stats.memberEvicted()
 		}
 	}
 }

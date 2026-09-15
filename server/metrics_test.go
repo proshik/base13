@@ -1254,3 +1254,28 @@ func TestRoomsAreReportedByState(t *testing.T) {
 	want[rooms("quick", "playing")]++
 	expectSeries(t, s, want)
 }
+
+func TestJournalBytesAreSummedAcrossRooms(t *testing.T) {
+	// The memory every journal holds, read from the rooms at the scrape: the
+	// same figure the load measurement reads, summed over every room there is,
+	// so a dashboard can set it against the caps.
+	s := &server{hub: NewHub()}
+	expectSeries(t, s, map[string]float64{"relay_journal_bytes": 0})
+
+	busy, _ := s.hub.Create("tanks", 1)
+	quiet, _ := s.hub.Create("tanks", 2)
+	s.hub.Create("tanks", 3) // opened, and nothing in its journal yet
+	host, _ := busy.Join()
+	for i := range 1000 {
+		busy.Broadcast(host, []byte{1, byte(i), byte(i >> 8), 0, 0, 31})
+	}
+	for range 10 {
+		quiet.Broadcast(nil, []byte{2, 0, 0, 0, 0, 31, 0, 0, 9})
+	}
+	busyBytes, quietBytes := busy.JournalBytes(), quiet.JournalBytes()
+	if busyBytes == 0 || quietBytes == 0 || busyBytes == quietBytes {
+		t.Fatalf("the test needs two different journals that hold something, got %d and %d", busyBytes, quietBytes)
+	}
+	expectSeries(t, s, map[string]float64{"relay_journal_bytes": float64(busyBytes + quietBytes)})
+	checkExposition(t, renderMetrics(s))
+}

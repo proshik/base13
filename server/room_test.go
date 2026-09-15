@@ -873,3 +873,53 @@ func TestABareRoomWorksWithoutStats(t *testing.T) {
 	}
 	expectSeries(t, s, zero)
 }
+
+func TestAnEvictionIsCounted(t *testing.T) {
+	// A member dropped for falling behind is lag the server could not absorb:
+	// their queue overflowed. Counted as it happens, once per member dropped. A
+	// full queue that has not overflowed yet is not an eviction, nor is leaving,
+	// nor the dropped member's own connection ending a moment later.
+	s := &server{hub: NewHub()}
+	room, _ := s.hub.Create("tanks", 1)
+	host, _ := room.Join()
+	guest, _ := room.Join()
+	evicted := func() float64 { return metricValue(t, s, "relay_members_evicted_total") }
+	if got := evicted(); got != 0 {
+		t.Fatalf("%v evictions before anyone fell behind", got)
+	}
+
+	for range cap(guest.Send) {
+		room.Broadcast(host, []byte{1})
+	}
+	if got := evicted(); got != 0 {
+		t.Fatalf("a queue filled to the brim counted %v evictions before it overflowed", got)
+	}
+	room.Broadcast(host, []byte{1})
+	if room.Occupants() != 1 {
+		t.Fatalf("%d in the room: the guest who never read was not dropped", room.Occupants())
+	}
+	if got := evicted(); got != 1 {
+		t.Fatalf("a guest dropped for falling behind counted %v, expected 1", got)
+	}
+	room.Broadcast(host, []byte{1})
+	room.Leave(guest)
+
+	// The same player back, and behind again: a second eviction.
+	returning, _ := room.Join()
+	for range cap(returning.Send) + 1 {
+		room.Broadcast(host, []byte{1})
+	}
+	room.Leave(returning)
+	if got := evicted(); got != 2 {
+		t.Fatalf("a second drop made the count %v, expected 2", got)
+	}
+
+	// Leaving on one's own is not an eviction.
+	partner, _ := room.Join()
+	room.Leave(partner)
+	room.Leave(host)
+	if got := evicted(); got != 2 {
+		t.Fatalf("players leaving on their own made the count %v, expected it to stay 2", got)
+	}
+	checkExposition(t, renderMetrics(s))
+}

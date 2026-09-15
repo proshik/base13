@@ -84,6 +84,12 @@ type stats struct {
 	pairingWaits histogramVec // over pairingWaitLabels, pairingWaitBuckets
 	played       histogramVec // over roomKindLabels, playedBuckets
 	capped       atomic.Uint64
+
+	packets     atomic.Uint64
+	packetBytes atomic.Uint64
+	evicted     atomic.Uint64
+	worstGaps   histogram // over worstGapBuckets
+	forwards    histogram // over forwardBuckets
 }
 
 // Why a connection was refused. Both limits reach the client as the same
@@ -143,6 +149,14 @@ var pairingWaitBuckets = durationBuckets(1, 2, 5, 10, 20, 30, 60, 120, 300, 600)
 // Time together from half a minute, a pair that met and parted at once, to two
 // hours, a long evening's match.
 var playedBuckets = durationBuckets(30, 60, 120, 300, 600, 1200, 1800, 3600, 7200)
+
+// The worst gap in a player's stream over a window, from three frames at sixty
+// a second, a hitch few notice, to a stall long enough to read as a dropped link.
+var worstGapBuckets = durationBuckets(0.05, 0.1, 0.25, 0.5, 1, 2.5)
+
+// The server's own delay, from half a millisecond, a relay with nothing in its
+// way, to a second, a socket that barely takes anything.
+var forwardBuckets = durationBuckets(0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1)
 
 // How many versions get a series of their own among the players seated right
 // now. Past it they are other: releases pile up over the years, and a script
@@ -252,13 +266,49 @@ func (s *stats) journalCapReached() {
 	s.capped.Add(1)
 }
 
+// relayed counts one game packet read from a player and handed to the room, and
+// its size.
+func (s *stats) relayed(size int) {
+	if s == nil {
+		return
+	}
+	s.packets.Add(1)
+	s.packetBytes.Add(uint64(size))
+}
+
+// memberEvicted counts one member the room dropped for falling behind.
+func (s *stats) memberEvicted() {
+	if s == nil {
+		return
+	}
+	s.evicted.Add(1)
+}
+
+// observeWorstGap observes the longest a player's stream went quiet over one
+// window.
+func (s *stats) observeWorstGap(gap time.Duration) {
+	if s == nil {
+		return
+	}
+	s.worstGaps.observeDuration(worstGapBuckets, gap)
+}
+
+// observeForward observes how long a game packet took from being relayed to
+// being in the partner's socket.
+func (s *stats) observeForward(took time.Duration) {
+	if s == nil {
+		return
+	}
+	s.forwards.observeDuration(forwardBuckets, took)
+}
+
 // livePlayers counts whoever is seated right now, by platform and by version
-// label, and the rooms they sit in, by kind and state. One walk gives both, so
-// a room's players and its state come from the same moment. It takes each
-// room's lock in turn and never the hub's: the caller copies the rooms out from
-// under that, so a scrape does not hold up everyone sitting down for as long as
-// it takes to walk every room.
-func livePlayers(rooms []*Room) (byPlatform []float64, byVersion map[string]int, byState []float64) {
+// label, the rooms they sit in, by kind and state, and the memory every room's
+// journal holds. One walk gives all of it, so a room's players and its state
+// come from the same moment. It takes each room's lock in turn and never the
+// hub's: the caller copies the rooms out from under that, so a scrape does not
+// hold up everyone sitting down for as long as it takes to walk every room.
+func livePlayers(rooms []*Room) (byPlatform []float64, byVersion map[string]int, byState []float64, journalBytes int) {
 	byPlatform = make([]float64, platformLabels.size())
 	byVersion = map[string]int{}
 	byState = make([]float64, roomStateLabels.size())
@@ -267,6 +317,7 @@ func livePlayers(rooms []*Room) (byPlatform []float64, byVersion map[string]int,
 		if i := roomStateLabels.index(room.kind(), room.state()); i >= 0 {
 			byState[i]++
 		}
+		journalBytes += room.journal.bytes()
 		for _, member := range room.members {
 			if i := platformLabels.index(platformLabel(member.client.platform)); i >= 0 {
 				byPlatform[i]++
@@ -275,7 +326,7 @@ func livePlayers(rooms []*Room) (byPlatform []float64, byVersion map[string]int,
 		}
 		room.mu.Unlock()
 	}
-	return byPlatform, byVersion, byState
+	return byPlatform, byVersion, byState, journalBytes
 }
 
 // versionCount is one version's series among the live players.
@@ -325,7 +376,7 @@ func (s *server) writeMetrics(w io.Writer) {
 	roomsLimit := s.hub.limit
 	rooms := slices.Collect(maps.Values(s.hub.rooms))
 	s.hub.mu.Unlock()
-	byPlatform, byVersion, byState := livePlayers(rooms)
+	byPlatform, byVersion, byState, journalBytes := livePlayers(rooms)
 
 	e := newExposition(w)
 	defer e.flush()
@@ -358,6 +409,9 @@ func (s *server) writeMetrics(w io.Writer) {
 	for _, v := range foldVersions(byVersion) {
 		e.sample("relay_players_by_version", []label{{"version", v.version}}, float64(v.players))
 	}
+	e.gauge("relay_journal_bytes",
+		"Memory the journals of every room hold right now, in bytes.",
+		float64(journalBytes))
 
 	writeRuntimeMetrics(e)
 	writeProcessFamilies(e, procRoot)
@@ -395,6 +449,20 @@ func (s *server) writeMetrics(w io.Writer) {
 		"Rooms whose journal reached its cap and stopped taking records; "+
 			"a player who drops after that cannot catch up.",
 		counted.capped.Load())
+	e.histogram("relay_packet_gap_worst_seconds",
+		"The longest a player's stream of packets went quiet in each window, observed once a window per player: "+
+			"jitter on the way to the server, and pauses in the game too.",
+		worstGapBuckets, &counted.worstGaps)
+	e.histogram("relay_forward_seconds",
+		"How long a game packet took from being relayed to being in the partner's socket: "+
+			"the server's own delay, and a partner's socket slow to take it.",
+		forwardBuckets, &counted.forwards)
+	e.counter("relay_members_evicted_total",
+		"Members a room dropped because their queue overflowed: they fell too far behind to catch up live.",
+		counted.evicted.Load())
+	e.counter("relay_packets_total", "Game packets read from players and relayed.", counted.packets.Load())
+	e.counter("relay_packet_bytes_total", "Bytes of the game packets read from players and relayed.",
+		counted.packetBytes.Load())
 }
 
 // How much a single vector or histogram can hold. The storage is a fixed array
