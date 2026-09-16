@@ -250,9 +250,20 @@ var rejectionLabels = labelSet{{"why", []string{"early", "malformed"}}}
 // bound's own literal, so 95 and 99 land exactly on their bounds.
 var speedBuckets = []float64{0.5, 0.75, 0.9, 0.95, 0.99, 1.01}
 
-// Input delay in ticks, from the five the game starts at to the sixteen a
-// ragged link raises it to.
-var inputDelayBuckets = []float64{5, 6, 8, 10, 12, 14, 16}
+// Input delay in ticks. It used to be a reading of the network: a client raised
+// it from five to sixteen as its link fell short, and the spread was the point.
+// A client on the current build holds it at a small constant instead and absorbs
+// a ragged link another way, so every window it sends lands at the bottom.
+//
+// The lowest bound is therefore what the histogram is now for: below it are
+// clients on the current build, above it clients on an older one, still raising
+// the delay as they always did. The upper bounds are kept so that those older
+// clients stay as legible as before.
+//
+// A whole population on the current build reads under two rather than at two:
+// a value sitting on a bucket's upper bound is interpolated across that bucket,
+// and the lowest bucket runs from zero. The shape is what to read, not the digit.
+var inputDelayBuckets = []float64{2, 5, 6, 8, 10, 12, 14, 16}
 
 // Frames a second, from a slide show to a fast display. 55 and 60 sit close
 // together so that a display that just misses sixty is told apart from one
@@ -274,6 +285,9 @@ func newClientReports(f families) clientReports {
 			windowLabels),
 		delay: f.histogram("relay_client_input_delay_ticks",
 			"The input delay a player's game ran at, in ticks, observed once for every reported window. "+
+				"Clients on the current build hold it at a small constant and pile into the lowest bucket; "+
+				"older ones raised it from five to sixteen as their link fell short, so the spread above the "+
+				"lowest bound is what those clients are still about. "+
 				"Self-reported and clamped to 0..64.",
 			inputDelayBuckets),
 		waits: f.counter("relay_client_waits_total",

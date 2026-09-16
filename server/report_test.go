@@ -705,3 +705,32 @@ func TestReportsNeverReachTheLog(t *testing.T) {
 		}
 	}
 }
+
+// The delay a player reports is no longer a reading of the network. A client on
+// the current build reports the same small number every window; one on an older
+// build reported a number that climbed from five to sixteen as its link fell
+// short. The histogram earns its keep only while the two land in different
+// buckets — that is now the question it answers: which builds are in play.
+func TestTheReportedDelayTellsTheBuildsApart(t *testing.T) {
+	s := &server{hub: NewHub()}
+	room, _ := s.hub.Create("code", 1)
+	member, _ := room.JoinAs(client{platform: "web"})
+	// Each report on a gate of its own, so the pace allowance turns none away.
+	for _, p := range []pace{
+		{Speed: 100, Delay: 2, FPS: 60},
+		{Speed: 100, Delay: 2, FPS: 60},
+		{Speed: 100, Delay: 5, FPS: 60},
+		{Speed: 100, Delay: 8, FPS: 60},
+	} {
+		var reports reportGate
+		s.takeReport(&reports, member, room, paceBody(p), time.Now())
+	}
+	expectSeries(t, s, map[string]float64{
+		`relay_client_input_delay_ticks_bucket{le="2"}`: 2,
+		`relay_client_input_delay_ticks_bucket{le="5"}`: 3,
+		`relay_client_input_delay_ticks_bucket{le="8"}`: 4,
+		`relay_client_input_delay_ticks_count`:          4,
+		`relay_client_input_delay_ticks_sum`:            17,
+	})
+	checkExposition(t, renderMetrics(s))
+}
