@@ -56,19 +56,19 @@ Now every message, journal, room and connection has a ceiling, every read and wr
 deadline, the server pings on its own, and the engine travels gzipped: 9.6 MB instead of
 37.7 on the first visit.
 
-The current release is `0.6.0`, published on 2026-09-16: the image
-`ghcr.io/proshik/base13:0.6.0` (also `latest`) and the desktop builds under the `v0.6.0`
-GitHub release. It carries the rollback — network play no longer waits for the partner —
-and the core it needed, a simulation tick three and a half times cheaper. The package is
-public and pulls without a login. What is left of the deployment plan is a machine to put
-it on; run the image with the metrics port as the plan's Task 4 shows.
+The current release is `0.6.0` for the game and `0.6.1` for the server, both published on
+2026-09-16. The desktop builds sit under the `v0.6.0` GitHub release and carry the
+rollback — network play no longer waits for the partner — and the core it needed, a
+simulation tick three and a half times cheaper. The image is `ghcr.io/proshik/base13:0.6.1`
+(also `latest`): the same game served to the browser, and a server whose delay histogram
+now has a bound at two, so it tells a client that steps back from one still on `0.5.0`.
+The image is built for amd64 only; on an arm64 Mac run it with `--platform linux/amd64`.
+The package is public and pulls without a login. What is left of the deployment plan is a
+machine to put it on; run the image with the metrics port as the plan's Task 4 shows.
 
-Nobody has yet played `0.6.0` over the internet: the rollback is proven by the lag
-profiles and by a match against a `0.5.0` client, not by two people at two laptops. That
-check waits for the public machine, and so does the one thing the release leaves crooked:
-the server sorts the delay a client reports into a histogram that starts at five ticks,
-and the delay is now always two, so every match falls into the bottom bucket and the
-metric stops telling anything apart.
+Nobody has yet played the rollback over the internet: it is proven by the lag profiles
+and by a match against a `0.5.0` client, not by two people at two laptops. That check
+waits for the public machine.
 
 **After it: installation through Homebrew** —
 `docs/plans/2026-09-04-homebrew-cask.md`. Gated on two things only the repository owner
