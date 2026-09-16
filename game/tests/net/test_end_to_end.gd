@@ -39,40 +39,25 @@ func test_two_peers_play_a_level_over_a_socket() -> void:
 	assert_true(connected, "the sides did not connect")
 
 	var frames := Golden.frames()
-	var host_input := NetInput.new(host_session, 0,
-		func(t: int) -> int: return frames[t][0])
-	var guest_input := NetInput.new(guest_session, 1,
-		func(t: int) -> int: return frames[t][1])
-	var host := _sim()
-	var guest := _sim()
-
-	for t in TICKS:
-		host_input.capture(t)
-		guest_input.capture(t)
-
-		var ready := false
-		for i in SPIN_LIMIT:
-			host_input.pump()
-			guest_input.pump()
-			if host_input.can_advance(t) and guest_input.can_advance(t):
-				ready = true
-				break
-			OS.delay_msec(2)
-		assert_true(ready, "tick %d never got both sides' input" % t)
-		if not ready:
-			return
-
-		assert_eq(host_input.inputs_for(t), guest_input.inputs_for(t),
-			"on tick %d the sides saw different input" % t)
-		host.tick(host_input.inputs_for(t))
-		guest.tick(guest_input.inputs_for(t))
-		host_input.after_tick(t, host.state_hash())
-		guest_input.after_tick(t, guest.state_hash())
-
-		if host.state_hash() != guest.state_hash():
-			fail_test("the worlds diverged on tick %d" % t)
-			return
-
-	assert_eq(host.state_hash(), guest.state_hash())
-	assert_false(host_input.desynced, "the hash comparison should not have fired")
-	assert_false(guest_input.desynced)
+	var sides: Array[NetMatch] = [
+		NetMatch.new(_sim(), NetInput.new(host_session, 0, func(t: int) -> int: return frames[t][0])),
+		NetMatch.new(_sim(), NetInput.new(guest_session, 1, func(t: int) -> int: return frames[t][1])),
+	]
+	for side in sides:
+		side.set_horizon(TICKS)
+	var done := false
+	for i in SPIN_LIMIT * 4:
+		for side in sides:
+			side.advance(1.0 / 60.0)
+		if sides[0].confirmed_world().tick == TICKS and sides[1].confirmed_world().tick == TICKS:
+			done = true
+			break
+		OS.delay_msec(2)
+	assert_true(done, "the match never confirmed tick %d: host %d, guest %d" % [
+		TICKS, sides[0].confirmed_world().tick, sides[1].confirmed_world().tick])
+	if not done:
+		return
+	var expected := ReferenceRun.hash_of(frames, TICKS)
+	for side in sides:
+		assert_eq(side.confirmed_world().hash_value(), expected, "the worlds are not the match's")
+		assert_false((side.source() as NetInput).desynced, "the hash comparison fired")

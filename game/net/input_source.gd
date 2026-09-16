@@ -1,7 +1,7 @@
 class_name InputSource
 
 ## Where the game screen takes its input from. In a single-player game the
-## keyboard and gamepad; in a network game the lockstep buffer. The screen knows
+## keyboard and gamepad; in a network game the rollback buffer. The screen knows
 ## nothing of the difference.
 ##
 ## A base class rather than an interface: GDScript has no interfaces, so the
@@ -18,11 +18,6 @@ func pump() -> void:
 func capture(_now: int) -> void:
 	pass
 
-## Whether this tick may be computed. On the network, only once both sides'
-## input has arrived.
-func can_advance(_tick: int) -> bool:
-	return true
-
 ## Both players' input for this tick.
 func inputs_for(_tick: int) -> Array[int]:
 	return [0, 0] as Array[int]
@@ -32,10 +27,6 @@ func inputs_for(_tick: int) -> Array[int]:
 ## frame, `flush()` sends what was captured at the end. Does nothing in a
 ## single-player game.
 func flush() -> void:
-	pass
-
-## Called once a tick has been computed: the hash comparison lives here.
-func after_tick(_tick: int, _world_hash: int) -> void:
 	pass
 
 ## A tick number past any game: alone, every tick is confirmed the moment it is.

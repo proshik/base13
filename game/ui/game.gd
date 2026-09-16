@@ -12,7 +12,9 @@ signal finished(outcome: int)
 
 const FIELD_ORIGIN := Vector2i(8, 16)
 const INTRO_SECONDS := 2.0
-const OUTRO_SECONDS := 1.5
+## The last explosion burns out over this many ticks. Counted in ticks rather than
+## seconds so that both sides of a network game end on the same one.
+const OUTRO_TICKS := 90
 ## How long a partner who has left the room is waited for. The same figure the
 ## relay gives our own link before it gives up: a room outlives a drop, so they
 ## may still come back, and either way the wait has to end at some point.
@@ -24,7 +26,9 @@ enum Phase { INTRO, PLAY, OUTRO, LOST_LINK, DONE }
 
 var _campaign: Campaign = null
 var _sim: GameSim = null
-var _pump := TickPump.new()
+var _match: NetMatch = null
+## The tick a level ends on, once the confirmed world has cleared or lost it.
+var _end_tick := -1
 var _effects := Effects.new()
 var _phase := Phase.INTRO
 var _timer := 0.0
@@ -50,17 +54,13 @@ func _ready() -> void:
 	add_child(_stats)
 
 ## The input source comes from outside: in a single-player game it stays the
-## keyboard, in a network game it becomes the lockstep buffer. The screen knows
+## keyboard, in a network game it becomes the network input. The screen knows
 ## nothing of the difference.
 func use_input(source: InputSource) -> void:
 	_input = source
 
 func desync_tick() -> int:
 	return _input.desync_tick if _input is NetInput else -1
-
-## The input delay this level ended with, for the next level to start from.
-func net_delay() -> int:
-	return _input.delay() if _input is NetInput else Lockstep.DELAY
 
 func configure(campaign: Campaign, _players: int, _best: int) -> void:
 	_campaign = campaign
@@ -82,7 +82,8 @@ func _begin_level() -> void:
 		return
 	_sim = GameSim.new(level, _campaign.level_seed(), SimConfig.new(),
 		_campaign.level_number, _campaign.slots.size(), _campaign.carryover())
-	_pump = TickPump.new()
+	_match = NetMatch.new(_sim, _input)
+	_end_tick = -1
 	_banner.show_text("STAGE %d" % _campaign.level_number)
 	_phase = Phase.INTRO
 	_timer = INTRO_SECONDS
@@ -136,10 +137,10 @@ func _toggle_pause() -> void:
 	# The engine falls silent while paused: a continuous hum over a stopped game
 	# sounds like a hang.
 	_audio.set_engine("")
-	if not _paused:
+	if not _paused and _match != null:
 		# Time passed while we stood still: without a reset the first frame would
 		# hand over a backlog of catch-up ticks and the game would lurch.
-		_pump.reset()
+		_match.reset_pump()
 
 func _process(delta: float) -> void:
 	if _paused:
@@ -156,40 +157,24 @@ func _process(delta: float) -> void:
 				_phase = Phase.PLAY
 		Phase.PLAY:
 			_advance(delta)
-			if _input is NetInput and _input.desynced:
-				# There is no point continuing: the sides hold different worlds.
-				_phase = Phase.DONE
-				finished.emit(ScreenFlow.Outcome.DESYNC)
+			if not _link_holds(delta):
 				return
-			if _input.dead():
-				_show_status("CONNECTION LOST")
-				_phase = Phase.LOST_LINK
-				_timer = LOST_SECONDS
-				return
-			# A partner who shut their window never comes back, and nothing else
-			# would ever end this game: our own link is fine, so `dead()` stays
-			# false and the caption would stand until somebody closed the window.
-			if _networked() and not _input.partner_present():
-				_partner_missing += delta
-				if _partner_missing >= PARTNER_GRACE:
-					_show_status("PARTNER LEFT")
-					_phase = Phase.LOST_LINK
-					_timer = LOST_SECONDS
-					return
-			else:
-				_partner_missing = 0.0
 			# A frozen screen with no explanation reads to a human as a hang, so
 			# whatever stopped the picture gets named.
 			_show_status(_network_status())
-			var state := _sim.get_state()
-			if state.level_cleared or state.game_over:
+			# Only a world both sides agree on ends a level: on a guess the base
+			# may have fallen that did not.
+			var world := _match.confirmed_world()
+			if world.level_cleared or world.game_over:
+				_end_tick = world.tick + OUTRO_TICKS
+				_match.set_horizon(_end_tick)
 				_phase = Phase.OUTRO
-				_timer = OUTRO_SECONDS
 		Phase.OUTRO:
 			# The simulation keeps running: the last explosion must burn out.
 			_advance(delta)
-			_timer -= delta
-			if _timer <= 0.0:
+			if not _link_holds(delta):
+				return
+			if _match.confirmed_world().tick >= _end_tick:
 				_finish_level()
 		Phase.LOST_LINK:
 			# We do not leave at once: the caption must be readable first.
@@ -203,6 +188,34 @@ func _process(delta: float) -> void:
 				_finish_level()
 		Phase.DONE:
 			pass
+
+## False once the match cannot go on: the worlds parted, the link is gone for good,
+## or the partner left and did not come back. The outro needs this too — it now
+## ends on a confirmed tick, and a partner gone mid-outro would hold it forever.
+func _link_holds(delta: float) -> bool:
+	if _input is NetInput and _input.desynced:
+		# There is no point continuing: the sides hold different worlds.
+		_phase = Phase.DONE
+		finished.emit(ScreenFlow.Outcome.DESYNC)
+		return false
+	if _input.dead():
+		_show_status("CONNECTION LOST")
+		_phase = Phase.LOST_LINK
+		_timer = LOST_SECONDS
+		return false
+	# A partner who shut their window never comes back, and nothing else would ever
+	# end this game: our own link is fine, so `dead()` stays false and the caption
+	# would stand until somebody closed the window.
+	if _networked() and not _input.partner_present():
+		_partner_missing += delta
+		if _partner_missing >= PARTNER_GRACE:
+			_show_status("PARTNER LEFT")
+			_phase = Phase.LOST_LINK
+			_timer = LOST_SECONDS
+			return false
+	else:
+		_partner_missing = 0.0
+	return true
 
 ## Three different things can stop the picture and a human must be able to tell
 ## them apart: our own link is gone, or it is fine and the partner is not
@@ -232,45 +245,18 @@ func _show_status(text: String) -> void:
 	_banner.hide_banner()
 
 func _advance(delta: float) -> void:
-	if _sim == null:
+	if _match == null:
 		return
-	# Effects age inside the tick loop rather than once per frame: otherwise,
-	# while catching up after a dropped frame, explosions would run slower than
-	# the game itself.
-	_input.pump()
-	# Time is spent on ticks that happened, not on ticks that came due: a tick
-	# that never got the other side's input must stay in debt. Spent for nothing,
-	# it was lost forever, and the game began falling behind itself.
-	var due := _pump.due(delta)
-	var ran := 0
-	var waited := false
-	for i in due:
-		# The number of the tick being computed: state.tick grows inside tick().
-		var t: int = _sim.get_state().tick
-		_input.capture(t)
-		# On the network a tick is computed only once both sides' input has
-		# arrived. Freezing together is right; drifting apart is not.
-		if not _input.can_advance(t):
-			waited = true
-			break
-		ran += 1
-		var before := _player_positions()
-		_sim.tick(_input.inputs_for(t))
-		_input.after_tick(t, _sim.state_hash())
-		# Movement is measured per tick rather than per frame: at 120 Hz half the
-		# frames fall between ticks, and a per-frame comparison would see
-		# "standing still".
-		_moving = _player_positions() != before
-		# There are two consumers of the events, so they are taken once and handed
-		# around: a second call to drain_events() would return nothing.
-		var events := _sim.drain_events()
-		_effects.absorb(events)
-		_audio.absorb(events)
-		_effects.advance()
-	_pump.spend(ran, waited)
-	# What was captured this frame goes out to the network at once instead of
-	# waiting for the next frame's poll.
-	_input.flush()
+	var frame := _match.advance(delta)
+	for step in frame.steps:
+		# Effects age inside the tick loop and only on ticks going forward: a tick
+		# computed again must not run an explosion ahead of the game.
+		_effects.absorb(step.events)
+		_audio.absorb(step.events)
+		if step.forward:
+			_effects.advance()
+	if not frame.steps.is_empty():
+		_moving = frame.moved
 	var state := _sim.get_state()
 	var items := ViewModel.build(state, _sim.get_config())
 	items.append_array(_effects.items())
@@ -291,19 +277,13 @@ func _update_engine(state: WorldState) -> void:
 	var alive := not state.player_tanks().is_empty()
 	_audio.set_engine(Audio.engine_sound(alive, _moving))
 
-func _player_positions() -> Array[Vector2i]:
-	var out: Array[Vector2i] = []
-	for t in _sim.get_state().player_tanks():
-		out.append(t.pos)
-	return out
-
 func _quit_to_menu() -> void:
 	_audio.set_engine("")
 	_phase = Phase.DONE
 	finished.emit(ScreenFlow.Outcome.QUIT)
 
 func _finish_level() -> void:
-	_campaign.finish_level(_sim.get_state())
+	_campaign.finish_level(_match.confirmed_world())
 	_audio.set_engine("")
 	_phase = Phase.DONE
 	var outcome := ScreenFlow.Outcome.LOST if _campaign.game_over \

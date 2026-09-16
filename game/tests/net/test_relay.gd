@@ -312,43 +312,30 @@ func test_two_sides_play_a_level_through_the_relay() -> void:
 	assert_true(_pair(host_link, guest_link), "the pair did not come together")
 
 	var frames := Golden.frames()
-	var host_input := NetInput.new(host_link, host_link.slot,
-		func(t: int) -> int: return frames[t][0])
-	var guest_input := NetInput.new(guest_link, guest_link.slot,
-		func(t: int) -> int: return frames[t][1])
-	var host := _sim()
-	var guest := _sim()
-
-	for t in PLAY_TICKS:
-		host_input.capture(t)
-		guest_input.capture(t)
-
-		var ready := false
-		for i in SPIN_LIMIT:
-			host_input.pump()
-			guest_input.pump()
-			if host_input.can_advance(t) and guest_input.can_advance(t):
-				ready = true
-				break
-			OS.delay_msec(2)
-		assert_true(ready, "tick %d never got both sides' input" % t)
-		if not ready:
-			return
-
-		assert_eq(host_input.inputs_for(t), guest_input.inputs_for(t),
-			"on tick %d the sides saw different input" % t)
-		host.tick(host_input.inputs_for(t))
-		guest.tick(guest_input.inputs_for(t))
-		host_input.after_tick(t, host.state_hash())
-		guest_input.after_tick(t, guest.state_hash())
-
-		if host.state_hash() != guest.state_hash():
-			fail_test("the worlds diverged on tick %d" % t)
-			return
-
-	assert_eq(host.state_hash(), guest.state_hash())
-	assert_false(host_input.desynced, "the hash comparison should not have fired")
-	assert_false(guest_input.desynced)
+	var sides: Array[NetMatch] = [
+		NetMatch.new(_sim(), NetInput.new(host_link, host_link.slot, func(t: int) -> int: return frames[t][0])),
+		NetMatch.new(_sim(), NetInput.new(guest_link, guest_link.slot, func(t: int) -> int: return frames[t][1])),
+	]
+	for side in sides:
+		side.set_horizon(PLAY_TICKS)
+	var done := false
+	for i in SPIN_LIMIT * 4:
+		for side in sides:
+			side.advance(1.0 / 60.0)
+		if sides[0].confirmed_world().tick == PLAY_TICKS and sides[1].confirmed_world().tick == PLAY_TICKS:
+			done = true
+			break
+		OS.delay_msec(2)
+	assert_true(done, "the match never confirmed tick %d: host %d, guest %d" % [
+		PLAY_TICKS, sides[0].confirmed_world().tick, sides[1].confirmed_world().tick])
+	if not done:
+		host_link.close()
+		guest_link.close()
+		return
+	var expected := ReferenceRun.hash_of(frames, PLAY_TICKS)
+	for side in sides:
+		assert_eq(side.confirmed_world().hash_value(), expected, "the worlds are not the match's")
+		assert_false((side.source() as NetInput).desynced, "the hash comparison fired")
 	host_link.close()
 	guest_link.close()
 
@@ -356,8 +343,8 @@ func _sim() -> GameSim:
 	return GameSim.new(Golden.level(), Golden.SEED, SimConfig.new(),
 		Golden.LEVEL_NUMBER, 2)
 
-## The same match with a drop in the middle of it. While the guest is away the
-## game goes on as far as the input already sent allows, and the guest's presses
+## The same match with a drop in the middle of it. While the guest is away each
+## side goes on on guesses as far as the window allows, and the guest's presses
 ## for those ticks go nowhere — the relay journals only what reached it, and
 ## replays the partner's stream to whoever returns, never their own. Unless the
 ## returning side sends them again, the partner waits for them forever.
@@ -370,40 +357,32 @@ func test_play_goes_on_after_a_drop_mid_game() -> void:
 	assert_true(_pair(host_link, guest_link), "the pair did not come together")
 
 	var frames := Golden.frames()
-	var inputs: Array[NetInput] = [
-		NetInput.new(host_link, host_link.slot, func(t: int) -> int: return frames[t][0]),
-		NetInput.new(guest_link, guest_link.slot, func(t: int) -> int: return frames[t][1]),
+	var sides: Array[NetMatch] = [
+		NetMatch.new(_sim(), NetInput.new(host_link, host_link.slot, func(t: int) -> int: return frames[t][0])),
+		NetMatch.new(_sim(), NetInput.new(guest_link, guest_link.slot, func(t: int) -> int: return frames[t][1])),
 	]
-	var sims: Array[GameSim] = [_sim(), _sim()]
-	var next: Array[int] = [0, 0]
-	var hashes: Array = [[], []]
+	for side in sides:
+		side.set_horizon(PLAY_TICKS)
 	var dropped_at := -1
 	for i in SPIN_LIMIT * 4:
-		for side in 2:
-			var input := inputs[side]
-			input.pump()
-			var t := next[side]
-			if t < PLAY_TICKS:
-				input.capture(t)
-				if input.can_advance(t):
-					sims[side].tick(input.inputs_for(t))
-					input.after_tick(t, sims[side].state_hash())
-					hashes[side].append(sims[side].state_hash())
-					next[side] = t + 1
-			input.flush()
-		if dropped_at < 0 and next[1] >= 60:
+		for side in sides:
+			side.advance(1.0 / 60.0)
+		var guest_tick: int = sides[1].sim().get_state().tick
+		if dropped_at < 0 and guest_tick >= 60:
 			# A lift, a sleeping laptop: the socket dies with nobody asking.
 			guest_link._socket.close()
-			dropped_at = next[1]
-		if next[0] >= PLAY_TICKS and next[1] >= PLAY_TICKS:
+			dropped_at = guest_tick
+		if sides[0].confirmed_world().tick == PLAY_TICKS and sides[1].confirmed_world().tick == PLAY_TICKS:
 			break
 		OS.delay_msec(2)
 
 	assert_gt(dropped_at, 0, "the drop never happened")
 	assert_eq(guest_link.state, Relay.State.READY, "the guest never came back")
-	assert_eq(next, [PLAY_TICKS, PLAY_TICKS] as Array[int],
-		"the match froze after the drop: host at %d, guest at %d" % [next[0], next[1]])
-	assert_eq(hashes[0], hashes[1], "the worlds diverged")
+	for side in sides:
+		assert_eq(side.confirmed_world().tick, PLAY_TICKS, "the match froze after the drop")
+	var expected := ReferenceRun.hash_of(frames, PLAY_TICKS)
+	for side in sides:
+		assert_eq(side.confirmed_world().hash_value(), expected, "the worlds diverged")
 	host_link.close()
 	guest_link.close()
 

@@ -2,7 +2,7 @@ class_name Session
 extends Link
 
 ## A connection between the two sides over WebSocket. A thin wrapper: packet
-## parsing lives in Protocol, laying input out by tick in Lockstep, and only the
+## parsing lives in Protocol, laying input out by tick in Rollback, and only the
 ## socket is here.
 ##
 ## WebSocket everywhere — on the local network and later through the relay. The
