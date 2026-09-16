@@ -346,8 +346,8 @@ Expected: `SELFTEST OK 2233634213` on screen. That number is `Golden.EXPECTED`, 
 
 Two tabs of one browser will not do, and the reason is worth knowing before it is
 mistaken for a fault of ours. Chrome stops driving animation frames in a hidden tab, and
-only one tab of a window is ever visible; lockstep needs both sides ticking, so the match
-freezes on `STAGE 1`. Seen locally against this very image: the pairing went through and
+only one tab of a window is ever visible; a network match needs both sides ticking — the
+visible side guesses for 200 ms and then stands — so the match freezes on `STAGE 1`. Seen locally against this very image: the pairing went through and
 the room filled, and then neither side advanced.
 
 The same thing follows for real players: a person who switches away from the tab
@@ -385,13 +385,12 @@ Expected: they play. Note `wss`, not `ws`: behind TLS the plain scheme is refuse
 While playing, watch the `[net]` lines — the terminal on desktop, the developer console in the browser. `L` puts the last second's numbers on screen as well:
 
 ```
-[net] 300 ticks in 4983 ms (norm 5000), speed 100%, waits 0 (longest 0 ms), slack: worst 1, average 3, delay 10
-[net] many waits — input delay raised to 11 ticks (183 ms)
+[net] 300 ticks in 5000 ms (norm 5000), speed 100%, stops 0 (longest 0 ms), rollbacks 8 (deepest 8), resim 3 ms, skips 1, lead 9 against 6
 ```
 
-A line every five seconds: real time for three hundred ticks, the speed against the clock, how many ticks waited for the partner and the longest wait, how many ticks of the partner's input were in hand at worst and on average, and the input delay. The delay is reconsidered every second, and every growth prints its own line.
+This is the `0.6.0` line; the game guesses the partner's keys and steps back when a guess was wrong, instead of waiting (`docs/specs/2026-09-16-rollback-design.md`). A line every five seconds: real time for three hundred ticks, the speed against the clock, `stops` — times the game stood because the partner had been silent past 200 ms — and the longest, how many `rollbacks` and the `deepest`, the time `resim` cost this machine, and the `skips` and leads that keep the two sides level.
 
-Speed below a hundred with no waits means the machine cannot keep up. Waits with the slack at zero mean the network. Through the relay the first level starts at a delay of eight; over the real internet it is expected to settle within a few seconds — around ten on a path to Moscow — to show `waits` near zero after that, and **not** to start over at the next level. A delay that keeps climbing, or waits that do not stop, are what to report, with these lines from both sides.
+Expected on a path to Moscow: your own tank answers the key at once, `stops` at zero after the first second, `deepest` around eight (the lag profiles settle there at 60 ± 20 ms a leg), `resim` a few milliseconds, speed at a hundred. Stops with no rollbacks mean the partner went quiet; a speed below a hundred with a large `resim` means the machine. Stops that keep coming on a live link, a `deepest` pinned at twelve, or a desync are what to report, with these lines from both sides.
 
 On the server side:
 

@@ -775,7 +775,7 @@
       "id": 16,
       "type": "timeseries",
       "title": "Round trip to players, p50 and p95",
-      "description": "The server's own ping to each player and the pong back, by platform, about every twenty seconds a player. Godot answers a ping once a frame, so desktop and native figures include up to about 16 ms of the game loop; browsers answer at once. A client can make its own figure worse by answering late, never better. High RTT with a low worst gap is a slow but steady path, which the input delay absorbs. Quantiles come from the buckets, never from sum over count: a mean is what a few slow connections drag furthest.",
+      "description": "The server's own ping to each player and the pong back, by platform, about every twenty seconds a player. Godot answers a ping once a frame, so desktop and native figures include up to about 16 ms of the game loop; browsers answer at once. A client can make its own figure worse by answering late, never better. High RTT with a low worst gap is a slow but steady path: guessing the partner's input absorbs it while the round trip fits in 200 ms, and past that the game stands. Quantiles come from the buckets, never from sum over count: a mean is what a few slow connections drag furthest.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"

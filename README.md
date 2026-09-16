@@ -77,7 +77,7 @@ game/          the Godot project: the whole game
   core/        simulation and campaign: rules without nodes and without the engine
   presentation/ rendering, sound, HUD, effects
   ui/          screens and the root switcher
-  net/         connectivity: a room through the server, local network, lockstep
+  net/         connectivity: a room through the server, local network, rollback
   platform/    keyboard, gamepad, file reading, high score, server address
   levels/      35 layouts in a text format
   assets/      atlases, sounds, icon, splash — all generated from tools/
@@ -153,19 +153,29 @@ A room works from anywhere: both sides dial out, so there is no port to forward 
 need to be on the same network. All it takes is a running server — see "Room server"
 below.
 
+The game does not wait for the partner's keys. It guesses them — whatever the partner
+held last — and when the real ones arrive and differ, it steps back a few ticks and
+computes them again within one frame. Your own tank answers two ticks after the press.
+The game stands only when the partner has been silent for longer than 200 ms: a hidden
+tab, a dropped link, or a path too long for guessing to cover.
+
 If the game stutters, look at the `[net]` lines — they appear every five seconds in the
-terminal, and in the browser in the developer console:
+terminal, and in the browser in the developer console. `L` puts the same figures on
+screen:
 
 ```
-[net] 300 ticks in 4986 ms (nominal 5000), rate 100%, waits 0 ...
+[net] 300 ticks in 5000 ms (norm 5000), speed 100%, stops 0 (longest 0 ms), rollbacks 8 (deepest 8), resim 3 ms, skips 1, lead 9 against 6
 ```
 
-A rate noticeably below a hundred with zero waits means the machine cannot keep up.
-Many waits and a shrinking buffer means the network cannot.
+- `stops` — times the game stood past those 200 ms, and the longest stand.
+- `rollbacks` and `deepest` — how often a guess was wrong and how far back it had to go.
+  On a path of about 110 ms to the server expect around eight ticks at the deepest.
+- `resim` — what stepping back cost this machine over the five seconds.
+- `skips` and `lead` — a side that got ahead of its partner lets one tick in twenty go
+  until the two are level.
 
-Input delay tunes itself along the way: on a smooth link it stays at five ticks and the
-controls are responsive; on jittery Wi-Fi it climbs to sixteen. Every increase gets its
-own log line.
+Stops with no rollbacks mean the partner went quiet. A speed noticeably below a hundred
+with no stops and a large `resim` means the machine cannot keep up.
 
 A direct connection (`LAN HOST` / `LAN JOIN`) does without the server, but on macOS 15
 and newer the system asks for local network permission on the first connection. Without
@@ -417,10 +427,14 @@ apart with the same rule as the `[net]` lines:
 - **Speed below 95% without waits** — nothing was waited for: the player's machine, or a
   frozen stand. The frame rate by platform shows a machine that cannot keep up; the worst
   gap shows a stand.
-- **Round trip high, worst gap low** — a slow but steady path. The input delay absorbs it:
-  the delay's p90 rises and the speed holds.
-- **Worst gap high, round trip normal** — jitter: Wi-Fi or a mobile link. The delay climbs
-  towards sixteen.
+- **Round trip high, worst gap low** — a slow but steady path. Guessing the partner's keys
+  absorbs it for as long as the round trip fits in 200 ms: the speed holds and nothing
+  waits. Past that the game stands, and the stands show as waits.
+- **Worst gap high, round trip normal** — jitter: Wi-Fi or a mobile link. A burst shorter
+  than 200 ms is guessed through; a longer one stands the game.
+- **Input delay above two** — a player still on a build older than `0.6.0`, which raised
+  its delay from five to sixteen instead of guessing. Both lines under two mean everyone
+  is on the current build.
 - **Forward delay high** — the server itself. Check the Go scheduler latency and CPU first.
 
 The `machine` share includes frozen stands. A window in which the game stood still — a
@@ -593,15 +607,22 @@ and downloading them every time takes longer than everything else put together.
 - [Part B2 plan](docs/plans/2026-08-30-battle-city-shell.md) —
   12 tasks, TDD
 - [Co-op design](docs/specs/2026-08-31-lockstep-design.md) —
-  lockstep, input delay, hash comparison
+  lockstep, input delay, hash comparison; superseded for network play by the rollback
+  design below
 - [Rooms and relay design](docs/specs/2026-09-01-platform-design.md) —
   server, room codes, journal and reconnect
 - [Quick game and image design](docs/specs/2026-09-03-quick-game-design.md) —
   matchmaking, static hosting, Docker
 - [Deployment plan](docs/plans/2026-09-04-deployment.md) —
   the image on a public machine behind a proxy; next up, not yet done
+- [Network lag plan](docs/plans/2026-09-14-network-lag.md) —
+  the adaptive input delay of `0.5.0`, since replaced by rollback
 - [Metrics plan](docs/plans/2026-09-14-metrics.md) —
-  Prometheus figures, alerts and a dashboard for the room server; ships with the next image
+  Prometheus figures, alerts and a dashboard for the room server; shipped in `0.5.0`
+- [Rollback design](docs/specs/2026-09-16-rollback-design.md) —
+  guessing the partner's keys and stepping back instead of waiting; shipped in `0.6.0`
+- [Rollback plan](docs/plans/2026-09-16-rollback.md) —
+  9 tasks, TDD
 - [Homebrew cask plan](docs/plans/2026-09-04-homebrew-cask.md) —
   installation on macOS in one command; after the deployment
 - [CLAUDE.md](CLAUDE.md) — invariants that must not be broken
