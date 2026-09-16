@@ -1,5 +1,7 @@
 # BASE 13: network co-op — design (subproject 3)
 
+> Superseded for network play by `docs/specs/2026-09-16-rollback-design.md`: the game now guesses and steps back instead of waiting. This document stays as the record of why lockstep came first.
+
 ## 1. Goal
 
 Two people play one match from different machines. First on the local network between

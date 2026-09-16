@@ -22,6 +22,8 @@ Application identifier: `com.proshik.base13`.
 - Network lag plan (adaptive delay, carried between levels; shipped in `0.5.0`, the live
   check waits for a public machine): `docs/plans/2026-09-14-network-lag.md`
 - Metrics plan (closed, shipped in `0.5.0`): `docs/plans/2026-09-14-metrics.md`
+- Rollback design (replaces lockstep in network play): `docs/specs/2026-09-16-rollback-design.md`
+- Rollback plan: `docs/plans/2026-09-16-rollback.md`
 
 The work is split into four subprojects: **1** the core and the single-player game,
 **2** mobile platforms, **3** network co-op, **4** release to the stores.
@@ -103,6 +105,7 @@ Godot is only ever launched with an explicit path: `godot --path game`. The scri
 | `game/core/bonuses.gd` | Power-up appearance, pickup and effects |
 | `game/core/event_log.gd` | The event accumulator shared by the core modules |
 | `game/core/campaign.gd` | Score, lives, kill counts between levels; looping after level 35 |
+| `game/core/snapshot.gd` | A copy of everything the simulation changes, for stepping back |
 | `game/levels/01..35.lvl` | Level layouts |
 
 The presentation layer — it reads state and draws, and holds no state of its own:
@@ -147,8 +150,10 @@ The network — the general shape of a link and its two incarnations:
 | `game/net/session.gd` | A direct connection on the local network |
 | `game/net/relay.gd` | A room by code through the server, coming back after a drop |
 | `game/net/protocol.gd` | Packing button presses and hashes |
-| `game/net/lockstep.gd` | Laying input out over ticks, delay, hash comparison |
-| `game/net/net_input.gd` | The input source for a network match |
+| `game/net/rollback.gd` | Both sides' input by tick: guesses, the confirmed tick, where to step back to, hashes |
+| `game/net/net_match.gd` | One level's ticks per frame: forward, back and forward again; the confirmed world |
+| `game/net/event_filter.gd` | What a tick computed again may still add to the screen and speakers |
+| `game/net/net_input.gd` | The input source for a network match: the wire, resends, pace, reports |
 | `server/*.go` | The server: WebSocket by hand, rooms, matchmaking, journal, game hosting; outside code only for metrics: Prometheus's `client_golang` and what it brings |
 | `server/metrics.go` | Metric families over closed label sets, recording, and the collector that reads rooms and connections at scrape time |
 | `server/report.go` | Players' pace and desync reports: parsing, clamping, the allowance, the verdict |
@@ -171,7 +176,8 @@ Content generators — everything is our own, everything from text sources:
 
 There is one way into the simulation: `GameSim.new(level, seed, config, level_number,
 player_count, carryover)` and `tick([bits_p1, bits_p2])` — five bits per player per
-tick. The core lives for exactly one level: it raises `level_cleared`, and what happens
+tick. It can also `save()` a copy of itself and `restore()` one, which is what lets a
+network game step back to a tick and compute it again. The core lives for exactly one level: it raises `level_cleared`, and what happens
 next is decided by `Campaign` — also in the core, because carrying lives over is a rule,
 not a picture.
 
@@ -286,36 +292,15 @@ Rakes we have already stepped on:
   imbalance above, from another door. And forget only on a frame that actually waited:
   forgetting on every frame of a long stand froze the game for good, because a 60 Hz
   frame (16.666 ms) is a hair short of a tick and nothing was ever due again.
-- **The two input delays together cover the circle, not one delay one way.** A tick
-  needs the partner's input, which left when they were a delay behind, which needed ours:
-  `(D_A + D_B) × 16.7 ms ≥ circle + two frames`. Five and five cover about 130 ms; a relay
-  in Moscow is four legs of about sixty. `game/tests/net/test_lag_profiles.gd` plays two
-  sides through a link with delays and jitter and records where each profile settles —
-  the numbers to argue from, not impressions.
-- **The delay is reconsidered every second, not every five.** Five seconds of computed
-  ticks, stretched further while the game stood waiting, meant ten to twenty seconds of
-  stutter before the delay caught up with a slow path. And waits are counted per tick,
-  not per frame: at 144 Hz one wait is six frames.
-- **Judged by its own slack, the side with the smaller delay comes down first.** Our
-  slack is the partner's delay, so the delays split apart — five against sixteen, for the
-  rest of the match. Only the side whose delay is not smaller gives slack back; the
-  partner's delay is read off the order of their packets (the input furthest ahead when
-  their hash for a tick arrives), no packet of its own needed.
-- **A new `NetInput` for every level threw the learnt delay away** — ten seconds of
-  stutter at the start of every level. The delay is carried, but taken on by growing to
-  it before the first tick: a side simply starting at eleven sent input for tick eleven
-  first, while the other side, filled in only to tick four, waited for tick five for
-  good.
-- **When raising the input delay, fill the band between the old and the new horizon.**
-  Our input will no longer be submitted for those ticks in the normal course of things,
-  and the partner is waiting for them — the result is not a stutter but a match frozen
-  solid. The band carries the keys held right now: it used to go out as zero in the game,
-  and a tank driven forward let go every time the delay grew.
+- **The lag profiles are the numbers to argue from, not impressions.**
+  `game/tests/net/test_lag_profiles.gd` plays two sides through a link with delays and
+  jitter on a clock it turns by hand, and its header records where each profile settles:
+  stops, the deepest rollback and the share of the clock kept.
 - **Input sent while the relay link was down is lost, and the partner waits for it
   forever.** The relay journals only what reached it and replays to a returning side the
   partner's stream, never its own. `NetInput` sends its recent input again when the link
-  comes back — from a whole delay back, not from its last tick: the partner may hold a
-  larger delay and still need input for ticks we have already computed. And whether
+  comes back — from `RESEND_BACK` ticks back, not from its last tick: the partner may be
+  a window behind their own confirmed tick, and that tick a window behind ours. And whether
   the link was up is read from the link when the input is built, not assumed: a level
   built while the relay was still greeting lost its band, and the welcome arriving with
   the first pump looked like a link that had never been down.
@@ -326,11 +311,37 @@ Rakes we have already stepped on:
   input again, once a second. Duplicates are ignored, and a few dozen packets a second
   of standing is not waiting breeding traffic.
 - **"It lags" without numbers is unverifiable.** Every five seconds `NetInput` prints a
-  `[net]` line: real time for three hundred ticks, the speed against the clock, how many
-  ticks waited and the longest wait, the partner's slack and the current delay; growth
-  prints its own line. Speed below a hundred with no waits means the machine is to blame;
-  waits with the slack at zero mean the network. `L` puts the last second's numbers on
+  `[net]` line: real time for three hundred ticks, the speed against the clock, `stops`
+  (frames that stood past the window), `rollbacks` and `deepest`, `resim` (what the
+  stepping back cost this machine), `skips` and the two sides' leads. Stops with no
+  rollbacks mean the partner is silent; a large `resim` with the speed below a hundred
+  means the machine, not the network. `L` puts the last second's numbers on
   screen. Visible in the terminal on desktop and in the developer console in the browser.
+- **Restoring a world must write into the same `WorldState`.** `Combat`, `EnemyAi`,
+  `Bonuses` and `Spawner` hold a reference to it; a restore that swapped the object left
+  them computing the world that was thrown away. `SimSnapshot.copy_world` writes into the
+  destination, and `test_snapshot.gd` sets every script variable to an odd value to catch
+  a field that was not copied.
+- **Only a confirmed world ends a level or is hashed.** On a guess the base may fall that
+  did not. A partner's hash that arrives before our tick is confirmed waits for ours;
+  dropped as "unknown", as the lockstep buffer did, a divergence would pass unseen.
+- **A level ends on a tick, not after a time.** The outro is `OUTRO_TICKS` past the
+  confirmed end, with a horizon, so both sides carry the same score out. The count starts
+  from the tick the clear was *confirmed* on, a tick later than the one it happened on. A
+  partner leaving mid-outro is handled like one leaving mid-level, or the outro waits for
+  a confirmation that never comes.
+- **A bullet and a tank walk unit by unit, so nothing invariant may be asked inside the
+  walk.** Thirty-two steps a tick each re-asked where the base was, which tanks were
+  about and which cells were covered — none of which changes while they walk. Settling it
+  beforehand, and re-checking the cells only at a cell boundary, took the tick from
+  423 µs to 121 µs on desktop and from 1.15 ms to 0.4 ms in the browser, which is what
+  brings a twelve-tick rollback inside a browser frame. Anything added to those loops
+  must be invariant-free, and `Golden.EXPECTED` is what proves it did not change the
+  game.
+- **Only the pace packet keeps the two sides level.** A side half a second ahead guesses
+  at the very edge of the window for the whole match — measured: depth 11–12 every second
+  and forty-two stops, against none for the partner. `TickPump` does not close that gap
+  by itself; `should_skip` lets one tick in twenty go until the leads match.
 - **The macOS export must sign the app itself** (`codesign/codesign=1` in the preset).
   Without it the application carries away the *engine template's* signature, which stops
   matching once the game's bundle is assembled, and macOS says "damaged, move to the
