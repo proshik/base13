@@ -42,3 +42,8 @@ func pick(items: Array) -> Variant:
 
 func get_state() -> int:
 	return _state
+
+## Only for stepping a simulation back: a state read by get_state() is never zero,
+## so there is no fixed point to guard against here.
+func set_state(value: int) -> void:
+	_state = value & MASK

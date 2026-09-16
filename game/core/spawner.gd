@@ -18,6 +18,14 @@ func _init(state: WorldState, config: SimConfig, rng: Rng, log: EventLog,
 	_log = log
 	_bonus_indices = bonus_indices.duplicate()
 
+## How many enemies have come out so far — it decides which one carries a bonus,
+## so stepping back must bring it back too.
+func spawned_count() -> int:
+	return _spawned_count
+
+func set_spawned_count(n: int) -> void:
+	_spawned_count = n
+
 func update() -> void:
 	if _state.enemy_queue.is_empty():
 		return

@@ -71,6 +71,24 @@ func drain_events() -> Array:
 func state_hash() -> int:
 	return _state.hash_value()
 
+## A copy of the simulation as it stands, for stepping back to later.
+func save() -> SimSnapshot:
+	var s := SimSnapshot.new()
+	s.state = WorldState.new()
+	SimSnapshot.copy_world(_state, s.state)
+	s.rng_state = _rng.get_state()
+	s.spawned = _spawner.spawned_count()
+	return s
+
+## Back to a saved moment. The snapshot is copied from, never taken over, so it
+## can be restored again.
+func restore(s: SimSnapshot) -> void:
+	SimSnapshot.copy_world(s.state, _state)
+	_rng.set_state(s.rng_state)
+	_spawner.set_spawned_count(s.spawned)
+	# Events of ticks that are about to be computed again belong to nobody.
+	_log.drain()
+
 # --- internals ---
 
 func _spawn_player(index: int) -> void:
