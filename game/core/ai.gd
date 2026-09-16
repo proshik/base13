@@ -18,12 +18,13 @@ func _init(state: WorldState, config: SimConfig, rng: Rng, combat: Combat) -> vo
 func update() -> void:
 	if _state.freeze_ticks > 0:
 		return
-	for t in _state.tanks:
-		if t.player_index >= 0 or not t.is_materialized() or t.stun_ticks > 0:
+	for item in _state.tanks:
+		var t: Entities.Tank = item
+		if t.player_index >= 0 or not t.alive or t.spawn_ticks != 0 or t.stun_ticks > 0:
 			continue
 		_update_enemy(t)
 
-func _update_enemy(t) -> void:
+func _update_enemy(t: Entities.Tank) -> void:
 	if t.ai_dir_timer > 0:
 		t.ai_dir_timer -= 1
 	if t.ai_fire_timer > 0:
@@ -45,7 +46,7 @@ func _update_enemy(t) -> void:
 		_combat.try_fire(t)
 		t.ai_fire_timer = _rng.next_range(_config.ai_fire_min, _config.ai_fire_max)
 
-func _choose_direction(t) -> void:
+func _choose_direction(t: Entities.Tank) -> void:
 	var options: Array[int] = []
 	for d in 4:
 		if Movement.can_occupy(_state, t, t.pos + Types.DIR_VEC[d]):
@@ -64,7 +65,7 @@ func _choose_direction(t) -> void:
 ## Of the available directions, picks the one that shortens the Manhattan
 ## distance to the target the most. On a tie the lower direction index wins —
 ## the scan runs in order, and that makes the choice reproducible.
-func _direction_toward(t, target: Vector2i, options: Array[int]) -> int:
+func _direction_toward(t: Entities.Tank, target: Vector2i, options: Array[int]) -> int:
 	var best := -1
 	var best_dist := 0
 	var here: Vector2i = t.center()
@@ -76,14 +77,17 @@ func _direction_toward(t, target: Vector2i, options: Array[int]) -> int:
 			best_dist = dist
 	return best
 
-func _target_point(t) -> Vector2i:
+func _target_point(t: Entities.Tank) -> Vector2i:
 	var players := _state.player_tanks()
 	if t.ai_target_is_base or players.is_empty():
 		return Consts.tile_to_unit(Consts.BASE_TILE) + Vector2i(Consts.TILE / 2, Consts.TILE / 2)
-	var nearest = null
+	var nearest: Entities.Tank = null
 	var best := 0
-	for p in players:
-		var d: int = absi(p.center().x - t.center().x) + absi(p.center().y - t.center().y)
+	var here: Vector2i = t.center()
+	for item in players:
+		var p: Entities.Tank = item
+		var pc: Vector2i = p.center()
+		var d: int = absi(pc.x - here.x) + absi(pc.y - here.y)
 		if nearest == null or d < best:
 			nearest = p
 			best = d
@@ -92,10 +96,20 @@ func _target_point(t) -> Vector2i:
 ## A ray along the barrel, cell by cell, to the first block a bullet cannot
 ## pass. The base only: reacting instantly to the player turned the enemies
 ## into snipers.
-func _sees_base(t) -> bool:
+func _sees_base(t: Entities.Tank) -> bool:
+	if not _state.base_alive:
+		return false
 	var delta: Vector2i = Types.DIR_VEC[t.dir]
 	var probe: Vector2i = t.center()
 	var base_pos: Vector2i = Consts.tile_to_unit(Consts.BASE_TILE)
+	# The ray keeps one coordinate: driving up or down it never leaves its
+	# column. A barrel pointing past the base can only walk the grid and answer
+	# no, so the answer is given here instead.
+	if delta.x == 0:
+		if probe.x < base_pos.x or probe.x >= base_pos.x + Consts.TILE:
+			return false
+	elif probe.y < base_pos.y or probe.y >= base_pos.y + Consts.TILE:
+		return false
 	for i in Consts.GRID * 2:
 		probe += delta * Consts.CELL
 		if probe.x < 0 or probe.y < 0 or probe.x >= Consts.FIELD or probe.y >= Consts.FIELD:
@@ -103,6 +117,6 @@ func _sees_base(t) -> bool:
 		var c: Vector2i = _state.terrain.cell_at_unit(probe)
 		if _state.terrain.blocks_bullet(c.x, c.y):
 			return false
-		if _state.base_alive and Movement.overlaps(probe, 1, base_pos, Consts.TILE):
+		if Movement.overlaps(probe, 1, base_pos, Consts.TILE):
 			return true
 	return false

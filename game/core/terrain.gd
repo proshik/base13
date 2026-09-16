@@ -36,13 +36,40 @@ func blocks_bullet(cx: int, cy: int) -> bool:
 func cell_at_unit(v: Vector2i) -> Vector2i:
 	return Vector2i(_div_floor(v.x, Consts.CELL), _div_floor(v.y, Consts.CELL))
 
+## The cell one coordinate falls in. cell_at_unit answers for both axes at once;
+## a bullet walking its line asks about them one at a time and has no use for a
+## vector to carry the pair.
+static func cell_index(v: int) -> int:
+	return _div_floor(v, Consts.CELL)
+
 func rect_blocks_tank(pos: Vector2i, size: int) -> bool:
-	var c0 := cell_at_unit(pos)
-	var c1 := cell_at_unit(pos + Vector2i(size - 1, size - 1))
-	for cy in range(c0.y, c1.y + 1):
-		for cx in range(c0.x, c1.x + 1):
+	return blocks_tank_rect(_div_floor(pos.x, Consts.CELL), _div_floor(pos.y, Consts.CELL),
+		_div_floor(pos.x + size - 1, Consts.CELL), _div_floor(pos.y + size - 1, Consts.CELL))
+
+## blocks_tank over a rectangle of cells, for a caller that already has the cell
+## indices — a tank stepping unit by unit crosses a cell boundary rarely.
+func blocks_tank_rect(cx0: int, cy0: int, cx1: int, cy1: int) -> bool:
+	var cy := cy0
+	while cy <= cy1:
+		var cx := cx0
+		while cx <= cx1:
 			if blocks_tank(cx, cy):
 				return true
+			cx += 1
+		cy += 1
+	return false
+
+## blocks_bullet over a rectangle of cells. Written as a plain walk because this
+## is the bullet's own loop and a `range` builds an array to walk.
+func blocks_bullet_rect(cx0: int, cy0: int, cx1: int, cy1: int) -> bool:
+	var cy := cy0
+	while cy <= cy1:
+		var cx := cx0
+		while cx <= cx1:
+			if blocks_bullet(cx, cy):
+				return true
+			cx += 1
+		cy += 1
 	return false
 
 func destroy_cell(cx: int, cy: int, can_break_steel: bool) -> int:

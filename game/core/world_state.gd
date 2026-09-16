@@ -25,21 +25,24 @@ func next_id() -> int:
 	return id
 
 func find_tank(id: int) -> Entities.Tank:
-	for t in tanks:
+	for item in tanks:
+		var t: Entities.Tank = item
 		if t.id == id:
 			return t
 	return null
 
 func player_tanks() -> Array:
 	var out: Array = []
-	for t in tanks:
+	for item in tanks:
+		var t: Entities.Tank = item
 		if t.player_index >= 0 and t.alive:
 			out.append(t)
 	return out
 
 func enemy_tanks() -> Array:
 	var out: Array = []
-	for t in tanks:
+	for item in tanks:
+		var t: Entities.Tank = item
 		if t.player_index < 0 and t.alive:
 			out.append(t)
 	return out
