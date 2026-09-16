@@ -47,3 +47,23 @@ func test_truncated_packet_is_rejected() -> void:
 
 func test_negative_tick_is_rejected() -> void:
 	assert_eq(Protocol.unpack(Protocol.pack_input(-1, 0)).kind, Protocol.Kind.INVALID)
+
+func test_pace_packet_carries_a_lead_either_way() -> void:
+	for lead in [0, 7, -7, 240, -240]:
+		var parsed := Protocol.unpack(Protocol.pack_pace(1200, lead))
+		assert_eq(parsed.kind, Protocol.Kind.PACE)
+		assert_eq(parsed.tick, 1200)
+		assert_eq(parsed.lead, lead)
+
+func test_a_truncated_pace_packet_is_garbage() -> void:
+	var packed := Protocol.pack_pace(10, 1)
+	packed.resize(8)
+	assert_eq(Protocol.unpack(packed).kind, Protocol.Kind.INVALID)
+
+## A client of 0.5.0 knows four kinds and parses anything else as garbage, which
+## it drops. The new kind must come after the old ones, never between them.
+func test_the_old_kinds_keep_their_numbers() -> void:
+	assert_eq(Protocol.Kind.INPUT, 1)
+	assert_eq(Protocol.Kind.HASH, 2)
+	assert_eq(Protocol.Kind.START, 3)
+	assert_eq(Protocol.Kind.PACE, 4)

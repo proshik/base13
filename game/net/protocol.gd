@@ -6,7 +6,7 @@ class_name Protocol
 ## Parsing must survive any garbage: the network delivers truncated, foreign and
 ## repeated data alike. No input may crash the game.
 
-enum Kind { INVALID, INPUT, HASH, START }
+enum Kind { INVALID, INPUT, HASH, START, PACE }
 
 ## The size depends on the kind: there are sixty input packets a second per
 ## player, and holding four bytes for five bits in them is pure waste of the
@@ -14,6 +14,8 @@ enum Kind { INVALID, INPUT, HASH, START }
 const SIZE_INPUT := 6   ## kind (1) + tick number (4) + bits (1)
 const SIZE_WIDE := 9    ## kind (1) + tick number (4) + four bytes of payload
 const MAX_U32 := 0xFFFFFFFF
+## Added to a lead so that a negative one fits the unsigned four bytes.
+const LEAD_BIAS := 0x80000000
 
 static func pack_input(tick: int, bits: int) -> PackedByteArray:
 	var out := PackedByteArray()
@@ -30,6 +32,11 @@ static func pack_hash(tick: int, hash_value: int) -> PackedByteArray:
 ## both sides get identical enemy waves without a single extra byte.
 static func pack_start(seed_value: int, players: int) -> PackedByteArray:
 	return _pack(Kind.START, players, seed_value)
+
+## How far ahead of the partner this side runs, in ticks. A client of 0.5.0 takes
+## it for garbage and drops it.
+static func pack_pace(tick: int, lead: int) -> PackedByteArray:
+	return _pack(Kind.PACE, tick, lead + LEAD_BIAS)
 
 static func _pack(kind: int, tick: int, payload: int) -> PackedByteArray:
 	var out := PackedByteArray()
@@ -65,4 +72,8 @@ static func unpack(data: PackedByteArray) -> Dictionary:
 			return {"kind": Kind.HASH, "tick": tick, "hash": payload}
 		Kind.START:
 			return {"kind": Kind.START, "players": tick, "seed": payload}
+		Kind.PACE:
+			if tick > MAX_U32 / 2:
+				return {"kind": Kind.INVALID}
+			return {"kind": Kind.PACE, "tick": tick, "lead": payload - LEAD_BIAS}
 	return {"kind": Kind.INVALID}
