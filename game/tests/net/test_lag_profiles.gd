@@ -16,7 +16,7 @@ extends GutTest
 ##   5 +- 3 ms            0         0   99 %     the start
 ##   60 +- 20 ms          0         8   99 %     second 1
 ##   120 +- 40 ms       520        12   84 %     second 1
-##   tab switch, 5 ms     0       0-5   93 %     second 13
+##   tab switch, 5 ms     0       0-1   93 %     second 13
 ##   tab switch, 60 ms    0         8   92 %     second 15
 ##   half a second early  0       2-3   98 %     second 10
 ##
@@ -24,6 +24,11 @@ extends GutTest
 ## it never stands: guesses cover it, eight ticks deep at the worst. The third is
 ## twice that path, past what twelve ticks can cover, and there the game does stand
 ## — but both sides stand together and the worlds stay the same.
+##
+## A tab switch leaves the side that stood a window ahead of its partner. Shed one
+## tick in twenty, that lead dropped nine frames and stepped back five ticks deep
+## after second 13 on a local network; it is shed inside the stand now, and the
+## line above reads as a calm local network does.
 
 const SEED := 13
 const SECONDS := 30
@@ -43,6 +48,9 @@ class Peer:
 	var stops: Array[int] = []
 	## The deepest rollback of every second.
 	var deepest: Array[int] = []
+	## Every frame as [ms, ticks computed going forward, rollback depth]. A frame
+	## that computed nothing — stood, or let a tick go — left the picture still.
+	var frames_log: Array = []
 	var skipped := 0.0
 	var _clock: LaggyLink.Clock
 	var _deepest_now := 0
@@ -58,6 +66,7 @@ class Peer:
 		var f := net_match.advance(delta)
 		if f.waited:
 			stops.append(_clock.ms())
+		frames_log.append([_clock.ms(), f.ran, f.rollback_depth])
 		_deepest_now = maxi(_deepest_now, f.rollback_depth)
 
 	func close_second() -> void:
@@ -75,9 +84,33 @@ class Peer:
 		return n
 
 	func deepest_from(second: int) -> int:
+		return deepest_between(second, deepest.size())
+
+	func deepest_between(from: int, to: int) -> int:
 		var d := 0
-		for s in range(second, deepest.size()):
+		for s in range(from, mini(to, deepest.size())):
 			d = maxi(d, deepest[s])
+		return d
+
+	## The first frame after `ms` that computed a tick.
+	func moved_after(ms: int) -> int:
+		for f in frames_log:
+			if f[0] > ms and f[1] > 0:
+				return f[0]
+		return -1
+
+	func stills_between(from_ms: int, to_ms: int) -> int:
+		var n := 0
+		for f in frames_log:
+			if f[0] >= from_ms and f[0] < to_ms and f[1] == 0:
+				n += 1
+		return n
+
+	func depth_between(from_ms: int, to_ms: int) -> int:
+		var d := 0
+		for f in frames_log:
+			if f[0] >= from_ms and f[0] < to_ms:
+				d = maxi(d, f[2])
 		return d
 
 ## One leg is `leg_ms ± jitter_ms`. Side 1 may go silent for a while, the way a
@@ -166,6 +199,31 @@ func test_a_tab_switch_on_a_slow_path_settles_as_quickly() -> void:
 	_assert_keeps_pace(peers, 95, 2000)
 	for i in 2:
 		assert_eq(peers[i].stops_from(15), 0, "side %d kept standing%s" % [i, _describe(peers)])
+
+## A partner back from a hidden tab finds the side that stood twelve ticks ahead:
+## it went on guessing for a whole window before it stood. Shed one tick in twenty,
+## that lead cost three and a half seconds of dropped frames and rollbacks ten deep
+## on a link that otherwise never steps back. From the moment the side that stood
+## moves again, five seconds of play look as they did before the partner left.
+##
+## The limits are what each path shows with no tab switch at all: a local network
+## drops no frame and never steps back; the path to the relay drops about one
+## frame in three seconds and steps back up to eight ticks.
+func test_after_a_tab_switch_the_game_runs_as_before_at_once() -> void:
+	for profile in [[5, 3, 0, 1], [60, 20, 2, 9]]:
+		var peers := _play(profile[0], profile[1], 10000, 2000)
+		_assert_same_worlds(peers)
+		for i in 2:
+			var from := peers[i].moved_after(12000)
+			assert_gt(from, 0, "side %d never moved again" % i)
+			var stills := peers[i].stills_between(from, from + 5000)
+			var depth := peers[i].depth_between(from, from + 5000)
+			assert_lte(stills, profile[2],
+				"legs of %d ms: side %d dropped %d frames in the five seconds after it moved again%s" % [
+					profile[0], i, stills, _describe(peers)])
+			assert_lte(depth, profile[3],
+				"legs of %d ms: side %d stepped back %d ticks after it moved again%s" % [
+					profile[0], i, depth, _describe(peers)])
 
 ## A side that started half a second earlier runs thirty ticks ahead and would
 ## guess at the very edge of the window for the whole match. It lets ticks go

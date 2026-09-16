@@ -175,7 +175,8 @@ screen:
   On a path of about 110 ms to the server expect around eight ticks at the deepest.
 - `resim` — what stepping back cost this machine over the five seconds.
 - `skips` and `lead` — a side that got ahead of its partner lets one tick in twenty go
-  until the two are level.
+  until the two are level. When the partner is back from a stand, the lead the stand left
+  is let go at once instead, before the picture moves again.
 
 `frozen` means the partner went quiet; `stops` that keep coming mean the network. A speed
 noticeably below a hundred with neither and a large `resim` means the machine cannot keep

@@ -39,6 +39,12 @@ const PACE_EVERY := 10
 const LEAD_TOLERATED := 2
 ## The fewest ticks between two let go: one in twenty cannot be seen.
 const SKIP_SPACING := 20
+## After a stand past FROZEN_MS, the most ticks let go one after another to fall
+## back into step. A stand leaves a window's lead at most; twice that bounds a lead
+## misread, which would otherwise hold the game still for good.
+const RECOVERY_LIMIT := 2 * Rollback.MAX_ROLLBACK
+## How many readings of the calm lead to keep. Three spans are half a second.
+const CALM_READINGS := 3
 
 var desynced := false
 var desync_tick := -1
@@ -65,6 +71,15 @@ var _resent_at := 0
 var _partner_lead := 0
 var _knows_partner_lead := false
 var _last_skip := -SKIP_SPACING
+## Our lead while the partner kept pace, which carries the way here: what "in
+## step" reads as on this path. See `_note_calm_lead`.
+var _calm_lead := 0
+var _knows_calm_lead := false
+var _calm_samples: Array[int] = []
+var _calm_edge := -1
+## Set when a stand past FROZEN_MS ends, until the lead it left is shed.
+var _recovering := false
+var _recovery_skips := 0
 var _report := Tally.new()
 
 ## What a stretch of play looked like.
@@ -160,6 +175,12 @@ func _end_wait(ms: int) -> void:
 	if ms > FROZEN_MS:
 		_report.frozen += 1
 		_report.frozen_longest_ms = maxi(_report.frozen_longest_ms, ms)
+		# This side went on guessing for a whole window before it stood, and the
+		# partner is back from where they stopped: a window behind. The lead is
+		# shed now, while the picture is still, rather than a tick in twenty over
+		# the next seconds.
+		_recovering = _knows_calm_lead
+		_recovery_skips = 0
 		return
 	_report.stops += 1
 	_report.longest_ms = maxi(_report.longest_ms, ms)
@@ -205,6 +226,7 @@ func note_tick(tick: int) -> void:
 	_report.ticks += 1
 	if tick % PACE_EVERY == 0 and _partner_heard():
 		_link.send(Protocol.pack_pace(tick, _lead()))
+		_note_calm_lead()
 	_rollback.forget_before(tick - Rollback.KEEP)
 	if _report.ticks % 60 == 0:
 		last_report = _overlay_line()
@@ -228,8 +250,42 @@ func _lead() -> int:
 func _partner_heard() -> bool:
 	return _rollback.remote_edge() >= Rollback.START
 
+## Our lead, taken only while the partner keeps pace: their input moved on nearly a
+## whole span since the last look. A partner going quiet sends their last packets
+## in a trickle, and a lead read then would count the silence as the path.
+##
+## The least of the last few readings, not the last one: a late packet only ever
+## makes the lead read high, so the lowest reading is the one nearest to in step.
+## A single reading on a local network came out three where in step is one, and
+## the game stopped shedding with four ticks still to go.
+func _note_calm_lead() -> void:
+	var edge := _rollback.remote_edge()
+	if _calm_edge >= 0 and edge - _calm_edge >= PACE_EVERY - LEAD_TOLERATED:
+		_calm_samples.append(_lead())
+		if _calm_samples.size() > CALM_READINGS:
+			_calm_samples.remove_at(0)
+		_calm_lead = _calm_samples.min()
+		_knows_calm_lead = true
+	_calm_edge = edge
+
 func should_skip(tick: int) -> bool:
-	if not _knows_partner_lead or not _partner_heard():
+	if not _partner_heard():
+		return false
+	if _recovering:
+		# Judged by our own lead against our own calm one, not against the
+		# partner's word: that is from before the stand, and up to a span stale.
+		# Down to a tick ahead — the rule below holds two leads apart by
+		# LEAD_TOLERATED, which is a tick each; stopping short of that left the
+		# rest to be shed one tick in twenty after all.
+		if _lead() > _calm_lead + LEAD_TOLERATED / 2 and _recovery_skips < RECOVERY_LIMIT:
+			_recovery_skips += 1
+			_report.skips += 1
+			return true
+		_recovering = false
+		# The spaced rule below waits a span, for the partner's word to be fresh.
+		_last_skip = tick
+		return false
+	if not _knows_partner_lead:
 		return false
 	if tick - _last_skip < SKIP_SPACING:
 		return false

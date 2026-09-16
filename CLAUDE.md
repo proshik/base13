@@ -354,6 +354,15 @@ Rakes we have already stepped on:
   server as a slow network; `NetInput` now counts those as `frozen`, apart. A window with
   a stand can still carry one-frame stops right after it while the two sides fall back
   into step, and those still count.
+- **A stand leaves the side that stood a window ahead.** It went on guessing for twelve
+  ticks before it stood, and the partner comes back from where they stopped. Shed by the
+  pace rule, one tick in twenty, that lead cost three and a half seconds of dropped frames
+  and rollbacks ten deep even on a local network. It is shed inside the stand now, while
+  the picture is still, judged against our own lead as it read while the partner kept
+  pace — the least of the last three readings, since a late packet only reads high — and
+  down to one tick, the pace rule's own tolerance. The partner's word is no use there: it
+  is from before the stand and up to a span stale, and a burst judged by it overshoots.
+  `RECOVERY_LIMIT` bounds the burst, or a misread lead would hold the game still for good.
 - **Only the pace packet keeps the two sides level.** A side half a second ahead guesses
   at the very edge of the window for the whole match — measured: depth 11–12 every second
   and forty-two stops, against none for the partner. `TickPump` does not close that gap

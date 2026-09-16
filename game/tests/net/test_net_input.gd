@@ -218,6 +218,88 @@ func test_being_as_far_ahead_as_the_partner_is_in_step() -> void:
 	input.handle_packet(Protocol.pack_pace(18, 21))
 	assert_false(input.should_skip(41))
 
+## A partner in step on a local network: their input for tick `t + 2` arrives as
+## we compute `t`. Up to `through`, then they stop, the way a hidden tab stops.
+func _calm_then_silent(net: Clocked, through: int) -> void:
+	for t in through + 1:
+		net.capture(t)
+		net.handle_packet(Protocol.pack_input(t + Rollback.INPUT_DELAY, 0))
+		assert_true(net.can_predict(t))
+		assert_false(net.should_skip(t), "tick %d was let go in calm play" % t)
+		net.note_tick(t)
+		net.now += 1000 / 60
+
+## Guesses to the window's edge, then a stand of two seconds. Returns the tick
+## that stands.
+func _stand_for_two_seconds(net: Clocked, from: int) -> int:
+	var t := from
+	while true:
+		net.capture(t)
+		if not net.can_predict(t):
+			break
+		net.note_tick(t)
+		net.now += 1000 / 60
+		t += 1
+	for i in 120:
+		assert_false(net.can_predict(t))
+		net.now += 1000 / 60
+	return t
+
+## The partner is back from the tick they stopped on, `lag` ticks further off than
+## before. Each call is one of their frames and one of ours on the standing tick.
+func _partner_back(net: Clocked, partner_tick: int, lag: int) -> int:
+	net.handle_packet(Protocol.pack_input(partner_tick + Rollback.INPUT_DELAY - lag, 0))
+	net.now += 1000 / 60
+	return partner_tick + 1
+
+## A stand leaves this side a whole window ahead of a partner back from a hidden
+## tab. It lets ticks go one after another while the game is still standing, until
+## its lead is what it was before the partner left — not one in twenty for seconds.
+func test_after_a_long_stand_the_lead_is_shed_at_once() -> void:
+	var net := Clocked.new(Flaky.new(), 0, func(_t: int) -> int: return 0)
+	_calm_then_silent(net, 60)
+	var standing := _stand_for_two_seconds(net, 61)
+	var partner := 61
+	var shed := 0
+	var resumed := false
+	for i in 40:
+		partner = _partner_back(net, partner, 0)
+		net.capture(standing)
+		if not net.can_predict(standing):
+			continue
+		if net.should_skip(standing):
+			assert_false(resumed, "a tick was let go after the game had moved again")
+			shed += 1
+			continue
+		resumed = true
+		net.note_tick(standing)
+		standing += 1
+	assert_true(resumed, "the game never moved again")
+	assert_gt(shed, 5, "the lead the stand left was not shed")
+	assert_lte(net._lead(), net._calm_lead + NetInput.LEAD_TOLERATED + 1,
+		"the game moved again still ahead of the partner")
+
+## A lead that cannot be shed must not freeze the game. A partner who comes back
+## just far enough for the standing tick to be guessed, and stalls again, leaves
+## the lead where it is; shedding gives up after a bounded number of ticks and the
+## tick is computed.
+func test_shedding_a_lead_is_bounded() -> void:
+	var net := Clocked.new(Flaky.new(), 0, func(_t: int) -> int: return 0)
+	_calm_then_silent(net, 60)
+	var standing := _stand_for_two_seconds(net, 61)
+	var last_heard := 60 + Rollback.INPUT_DELAY
+	for t in range(last_heard + 1, standing - Rollback.MAX_ROLLBACK + 1):
+		net.handle_packet(Protocol.pack_input(t, 0))
+	var shed := 0
+	for i in 200:
+		net.capture(standing)
+		assert_true(net.can_predict(standing), "the standing tick cannot be guessed")
+		if not net.should_skip(standing):
+			break
+		shed += 1
+		net.now += 1000 / 60
+	assert_eq(shed, NetInput.RECOVERY_LIMIT)
+
 func test_the_lead_goes_out_every_few_ticks() -> void:
 	var link := Flaky.new()
 	var net := NetInput.new(link, 0, func(_t: int) -> int: return 0)
