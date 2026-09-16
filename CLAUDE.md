@@ -320,10 +320,10 @@ Rakes we have already stepped on:
   of standing is not waiting breeding traffic.
 - **"It lags" without numbers is unverifiable.** Every five seconds `NetInput` prints a
   `[net]` line: real time for three hundred ticks, the speed against the clock, `stops`
-  (frames that stood past the window), `rollbacks` and `deepest`, `resim` (what the
-  stepping back cost this machine), `skips` and the two sides' leads. Stops with no
-  rollbacks mean the partner is silent; a large `resim` with the speed below a hundred
-  means the machine, not the network. `L` puts the last second's numbers on
+  (short stands past the window), `frozen` (stands past `FROZEN_MS`), `rollbacks` and
+  `deepest`, `resim` (what the stepping back cost this machine), `skips` and the two
+  sides' leads. `frozen` means the partner went quiet; stops that keep coming mean the
+  network; a large `resim` with the speed below a hundred means the machine. `L` puts the last second's numbers on
   screen. Visible in the terminal on desktop and in the developer console in the browser.
 - **Restoring a world must write into the same `WorldState`.** `Combat`, `EnemyAi`,
   `Bonuses` and `Spawner` hold a reference to it; a restore that swapped the object left
@@ -346,6 +346,13 @@ Rakes we have already stepped on:
   brings a twelve-tick rollback inside a browser frame. Anything added to those loops
   must be invariant-free, and `Golden.EXPECTED` is what proves it did not change the
   game.
+- **A stand is not a wait.** The server scores a slow window `network` if it waited and
+  `machine` if it did not, and 0.5.0 kept stands longer than `FROZEN_MS` (150 ms) out of
+  its waits: they are a frame loop standing still, not a network falling short. The
+  rollback rewrite dropped that line, and `0.6.0` sent a partner's hidden tab to the
+  server as a slow network; `NetInput` now counts those as `frozen`, apart. A window with
+  a stand can still carry one-frame stops right after it while the two sides fall back
+  into step, and those still count.
 - **Only the pace packet keeps the two sides level.** A side half a second ahead guesses
   at the very edge of the window for the whole match — measured: depth 11–12 every second
   and forty-two stops, against none for the partner. `TickPump` does not close that gap

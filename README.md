@@ -164,18 +164,22 @@ terminal, and in the browser in the developer console. `L` puts the same figures
 screen:
 
 ```
-[net] 300 ticks in 5000 ms (norm 5000), speed 100%, stops 0 (longest 0 ms), rollbacks 8 (deepest 8), resim 3 ms, skips 1, lead 9 against 6
+[net] 300 ticks in 5000 ms (norm 5000), speed 100%, stops 0 (longest 0 ms), frozen 0 (longest 0 ms), rollbacks 8 (deepest 8), resim 3 ms, skips 1, lead 9 against 6
 ```
 
-- `stops` — times the game stood past those 200 ms, and the longest stand.
+- `stops` — times the game stood past those 200 ms for a moment, up to 150 ms: a path a
+  little too long for guessing. These are the waits the server hears.
+- `frozen` — stands longer than that: the partner's hidden tab, a dropped link. Shown
+  here, not sent to the server as waits.
 - `rollbacks` and `deepest` — how often a guess was wrong and how far back it had to go.
   On a path of about 110 ms to the server expect around eight ticks at the deepest.
 - `resim` — what stepping back cost this machine over the five seconds.
 - `skips` and `lead` — a side that got ahead of its partner lets one tick in twenty go
   until the two are level.
 
-Stops with no rollbacks mean the partner went quiet. A speed noticeably below a hundred
-with no stops and a large `resim` means the machine cannot keep up.
+`frozen` means the partner went quiet; `stops` that keep coming mean the network. A speed
+noticeably below a hundred with neither and a large `resim` means the machine cannot keep
+up.
 
 A direct connection (`LAN HOST` / `LAN JOIN`) does without the server, but on macOS 15
 and newer the system asks for local network permission on the first connection. Without
@@ -443,6 +447,11 @@ any other, and it reads as low speed with no waits, which is the `machine` verdi
 blaming players' machines, look at `relay_packet_gap_worst_seconds`: a stand shows there as a
 gap of seconds, and a slow machine does not. The same windows pull down the speed and frame
 rate panels.
+
+Two things bend that rule. Players on `0.6.0` sent such stands as waits, so their frozen
+windows read as `network`. And on any build a window with a partner's stand can still carry
+a few one-frame stops right after it, while the two sides fall back into step, which also
+tips it to `network`.
 
 What else the figures do not say:
 

@@ -16,6 +16,12 @@ const REPORT_EVERY := 300
 ## How many frames in a row may stand before the screen says so: about a second.
 ## Any less and the caption would blink with ordinary jitter.
 const STALL_BEFORE_SAYING := 60
+## A stop this long is a frame loop that stood still — the partner's hidden tab, a
+## dropped link — and not a network falling short. It is shown on the `[net]` line
+## as `frozen` but not sent to the server as a wait, where it would turn a partner
+## looking at another tab into a slow network. 0.5.0 drew the line at the same
+## place, so both builds report the same stand the same way.
+const FROZEN_MS := 150
 ## How long a tick may stand on a live link before our recent input goes out again,
 ## and how often after that. See `_send_again`.
 const RESEND_MS := 1000
@@ -67,6 +73,8 @@ class Tally:
 	var ticks := 0
 	var stops := 0
 	var longest_ms := 0
+	var frozen := 0
+	var frozen_longest_ms := 0
 	var rollbacks := 0
 	var deepest := 0
 	var resim_us := 0
@@ -145,8 +153,13 @@ func can_predict(tick: int) -> bool:
 	return false
 
 ## A stop shorter than a tick is no stop: at 144 Hz the tick was asked for early.
+## One longer than FROZEN_MS is a stand, counted apart.
 func _end_wait(ms: int) -> void:
 	if ms < 1000 / 60:
+		return
+	if ms > FROZEN_MS:
+		_report.frozen += 1
+		_report.frozen_longest_ms = maxi(_report.frozen_longest_ms, ms)
 		return
 	_report.stops += 1
 	_report.longest_ms = maxi(_report.longest_ms, ms)
@@ -233,17 +246,18 @@ func _desync(tick: int) -> void:
 	desync_tick = tick
 	_link.report_desync()
 
-## What to read: `stops` are frames the game stood past the window — the partner is
-## silent or the path is longer than 200 ms. `rollbacks` and `deepest` say how often
+## What to read: `stops` are times the game stood past the window for a moment —
+## the path is longer than 200 ms; `frozen` are stands longer than FROZEN_MS — the
+## partner went quiet. `rollbacks` and `deepest` say how often
 ## and how far guesses were wrong; `resim` is the time that cost this machine. Speed
 ## below 100 with no stops and a large resim means the machine, not the network.
 func _print_report() -> void:
 	var elapsed := maxi(1, _clock() - _report.began)
 	var expected := REPORT_EVERY * 1000 / 60
 	var speed := expected * 100 / elapsed
-	print("[net] %d ticks in %d ms (norm %d), speed %d%%, stops %d (longest %d ms), rollbacks %d (deepest %d), resim %d ms, skips %d, lead %d against %d" % [
+	print("[net] %d ticks in %d ms (norm %d), speed %d%%, stops %d (longest %d ms), frozen %d (longest %d ms), rollbacks %d (deepest %d), resim %d ms, skips %d, lead %d against %d" % [
 		REPORT_EVERY, elapsed, expected, speed, _report.stops, _report.longest_ms,
-		_report.rollbacks, _report.deepest, _report.resim_us / 1000, _report.skips,
+		_report.frozen, _report.frozen_longest_ms, _report.rollbacks, _report.deepest, _report.resim_us / 1000, _report.skips,
 		_lead() if _partner_heard() else 0, _partner_lead])
 	_link.report_pace({"speed": speed, "waits": _report.stops,
 		"delay": Rollback.INPUT_DELAY, "fps": _fps()})
@@ -251,8 +265,8 @@ func _print_report() -> void:
 func _overlay_line() -> String:
 	var elapsed := maxi(1, _clock() - _report.began)
 	var lead := _lead() if _partner_heard() else 0
-	return "SPD %d STOP %d RB %d DEEP %d RESIM %d %s %d" % [
-		_report.ticks * 100000 / 60 / elapsed, _report.stops, _report.rollbacks,
+	return "SPD %d STOP %d FRZ %d RB %d DEEP %d RESIM %d %s %d" % [
+		_report.ticks * 100000 / 60 / elapsed, _report.stops, _report.frozen, _report.rollbacks,
 		_report.deepest, _report.resim_us / 1000, "LEAD" if lead >= 0 else "BACK", absi(lead)]
 
 func _fps() -> int:

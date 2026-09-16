@@ -236,12 +236,13 @@ class Reporter extends Link:
 
 ## Three hundred ticks, the partner's input twelve ticks behind; every sixtieth
 ## tick from the thirtieth it is thirteen behind for fifty milliseconds — a stop.
-func _play(net: Clocked, from: int, to: int) -> void:
+## On `frozen_at` the stand lasts longer than FROZEN_MS instead.
+func _play(net: Clocked, from: int, to: int, frozen_at := -1) -> void:
 	for t in range(from, to):
 		net.capture(t)
 		if t >= 17 and t % 60 == 30:
 			assert_false(net.can_predict(t), "tick %d was meant to stand" % t)
-			net.now += 50
+			net.now += NetInput.FROZEN_MS + 50 if t == frozen_at else 50
 		if t - 12 >= Rollback.START:
 			net.handle_packet(Protocol.pack_input(t - 12, 0))
 		assert_true(net.can_predict(t), "tick %d is not computed" % t)
@@ -262,6 +263,22 @@ func test_each_line_sends_one_report() -> void:
 	assert_eq(link.paces[0], {"speed": 99, "waits": 5, "delay": Rollback.INPUT_DELAY, "fps": 60})
 	for key in link.paces[0]:
 		assert_eq(typeof(link.paces[0][key]), TYPE_INT, "%s is not a whole number" % key)
+
+## A stand longer than FROZEN_MS is somebody's frame loop standing still — the
+## partner's hidden tab, a dropped link — and not a network falling short. The
+## server hears only the short stops as waits, the way 0.5.0 reported them; told
+## otherwise, it would count a partner looking at another tab as a slow network.
+## The stand still shows on the line a human reads.
+func test_a_long_stand_is_not_reported_as_a_wait() -> void:
+	var link := Reporter.new()
+	var net := Clocked.new(link, 0, func(_t: int) -> int: return 0, func() -> float: return 60.0)
+	_play(net, 0, NetInput.REPORT_EVERY, 90)
+	assert_eq(link.paces.size(), 1)
+	if link.paces.size() != 1:
+		return
+	# 299 ticks of 16 ms, four stops of 50 and a stand of 200: 5184 ms, 96 %.
+	assert_eq(link.paces[0], {"speed": 96, "waits": 4, "delay": Rollback.INPUT_DELAY, "fps": 60})
+	assert_string_contains(net.last_report, "STOP 4 FRZ 1")
 
 func test_a_desync_is_reported_once() -> void:
 	var link := Reporter.new()

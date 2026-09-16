@@ -385,12 +385,12 @@ Expected: they play. Note `wss`, not `ws`: behind TLS the plain scheme is refuse
 While playing, watch the `[net]` lines — the terminal on desktop, the developer console in the browser. `L` puts the last second's numbers on screen as well:
 
 ```
-[net] 300 ticks in 5000 ms (norm 5000), speed 100%, stops 0 (longest 0 ms), rollbacks 8 (deepest 8), resim 3 ms, skips 1, lead 9 against 6
+[net] 300 ticks in 5000 ms (norm 5000), speed 100%, stops 0 (longest 0 ms), frozen 0 (longest 0 ms), rollbacks 8 (deepest 8), resim 3 ms, skips 1, lead 9 against 6
 ```
 
-This is the `0.6.0` line; the game guesses the partner's keys and steps back when a guess was wrong, instead of waiting (`docs/specs/2026-09-16-rollback-design.md`). A line every five seconds: real time for three hundred ticks, the speed against the clock, `stops` — times the game stood because the partner had been silent past 200 ms — and the longest, how many `rollbacks` and the `deepest`, the time `resim` cost this machine, and the `skips` and leads that keep the two sides level.
+This is the `0.6.0` line; the game guesses the partner's keys and steps back when a guess was wrong, instead of waiting (`docs/specs/2026-09-16-rollback-design.md`). A line every five seconds: real time for three hundred ticks, the speed against the clock, `stops` — short stands past the 200 ms the game can guess through, which the server hears as waits — and the longest, `frozen` — stands past 150 ms: the partner's hidden tab or a dropped link, kept off the server's waits — and the longest of those, how many `rollbacks` and the `deepest`, the time `resim` cost this machine, and the `skips` and leads that keep the two sides level.
 
-Expected on a path to Moscow: your own tank answers the key at once, `stops` at zero after the first second, `deepest` around eight (the lag profiles settle there at 60 ± 20 ms a leg), `resim` a few milliseconds, speed at a hundred. Stops with no rollbacks mean the partner went quiet; a speed below a hundred with a large `resim` means the machine. Stops that keep coming on a live link, a `deepest` pinned at twelve, or a desync are what to report, with these lines from both sides.
+Expected on a path to Moscow: your own tank answers the key at once, `stops` at zero after the first second, `deepest` around eight (the lag profiles settle there at 60 ± 20 ms a leg), `resim` a few milliseconds, speed at a hundred. `frozen` means the partner went quiet; `stops` that keep coming mean the network; a speed below a hundred with a large `resim` means the machine. Stops that keep coming on a live link, a `deepest` pinned at twelve, or a desync are what to report, with these lines from both sides.
 
 On the server side:
 
