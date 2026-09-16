@@ -61,12 +61,17 @@ func _run_selftest() -> void:
 	var matched := actual == Golden.EXPECTED
 	print("SELFTEST %s: got %d, golden %d" % [
 		"MATCHED" if matched else "DIVERGED", actual, Golden.EXPECTED])
+	var cost := Bench.measure()
+	print("SELFTEST TIMING tick %d us, save %d us, restore and %d ticks again %d us" % [
+		cost["tick_us"], cost["save_us"], Bench.DEPTH, cost["resim_us"]])
 	# The result goes on screen and not only to the console: in a browser the
 	# export shell overrides the tab title, and reaching the console means
 	# opening developer tools.
 	var banner: Banner = Banner.new()
 	add_child(banner)
-	banner.show_text("SELFTEST %s %d" % ["OK" if matched else "FAIL", actual])
+	# Digits and capital letters only: the atlas font has nothing else.
+	banner.show_text("SELFTEST %s %d TICK %d SAVE %d RESIM %d" % [
+		"OK" if matched else "FAIL", actual, cost["tick_us"], cost["save_us"], cost["resim_us"]])
 
 ## The icon is also set at runtime: the project setting is enough for a built
 ## application, but when running from the editor the engine's logo would
