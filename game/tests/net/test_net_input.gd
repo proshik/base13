@@ -251,6 +251,65 @@ func test_a_match_standing_at_the_horizon_sends_input_again() -> void:
 	assert_lte(link.wire.max() if not link.wire.is_empty() else 0, sent_through,
 		"input went out past the horizon")
 
+## The events a hang is read from, kept rather than printed.
+class Logged extends Clocked:
+	var lines: Array[String] = []
+	func _log(line: String) -> void:
+		lines.append(line)
+
+func test_a_level_says_where_it_ends_and_that_it_is_done() -> void:
+	var net := Logged.new(Flaky.new(), 1, func(_t: int) -> int: return 0)
+	net.level_began(3)
+	net.level_ends(1234, 1144, 1146)
+	net.level_done(1234)
+	assert_eq(net.lines, [
+		"level 3 begins, slot 1",
+		"level 3 ends on tick 1234: ended in 1144, seen at 1146",
+		"level 3 done on tick 1234",
+	] as Array[String])
+
+## A stand says once why input went out again, not once a second.
+func test_a_stand_at_the_horizon_is_told_once() -> void:
+	var link := Flaky.new()
+	var net := Logged.new(link, 0, func(_t: int) -> int: return 0)
+	net.level_began(3)
+	var horizon := Rollback.START + 6
+	for t in horizon:
+		net.capture(t)
+		net.note_tick(t)
+	net.lines.clear()
+	for i in 4:
+		net.stand_at_horizon(horizon)
+		net.now += NetInput.RESEND_MS
+	assert_eq(net.lines, [
+		"level 3: standing at the horizon %d for 1000 ms, confirmed through %d, input sent again for %d..%d"
+			% [horizon, Rollback.START - 1, Rollback.START, horizon - 1 + Rollback.INPUT_DELAY],
+	] as Array[String])
+
+func test_a_stand_at_the_window_is_told_once() -> void:
+	var net := Logged.new(Flaky.new(), 0, func(_t: int) -> int: return 0)
+	net.level_began(2)
+	_capture_through(net, 20)
+	var tick := Rollback.START + Rollback.MAX_ROLLBACK
+	for i in 4:
+		net.can_predict(tick)
+		net.now += NetInput.RESEND_MS
+	assert_eq(net.lines.size(), 2, "%s" % [net.lines])
+	assert_eq(net.lines[1], "level 2: tick %d stood 1000 ms, confirmed through %d, input sent again for %d..%d"
+		% [tick, Rollback.START - 1, Rollback.START, 20 + Rollback.INPUT_DELAY])
+
+func test_a_link_back_is_told() -> void:
+	var link := Flaky.new()
+	var net := Logged.new(link, 0, func(_t: int) -> int: return 0)
+	net.level_began(1)
+	_capture_through(net, 8)
+	link.up = false
+	net.pump()
+	link.up = true
+	net.pump()
+	assert_eq(net.lines[-1], "level 1: link back, input sent again for %d..%d"
+		% [Rollback.START, 8 + Rollback.INPUT_DELAY])
+
 func test_without_word_from_the_partner_nothing_is_skipped() -> void:
 	for t in 60:
 		input.note_tick(t)

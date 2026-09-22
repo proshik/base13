@@ -84,6 +84,8 @@ func _begin_level() -> void:
 		_campaign.level_number, _campaign.slots.size(), _campaign.carryover())
 	_match = NetMatch.new(_sim, _input)
 	_end_tick = -1
+	if _networked():
+		_input.level_began(_campaign.level_number)
 	_banner.show_text("STAGE %d" % _campaign.level_number)
 	_phase = Phase.INTRO
 	_timer = INTRO_SECONDS
@@ -170,12 +172,17 @@ func _process(delta: float) -> void:
 				_end_tick = end
 				_match.set_horizon(_end_tick)
 				_phase = Phase.OUTRO
+				if _networked():
+					var world := _match.confirmed_world()
+					_input.level_ends(_end_tick, world.ended_at, world.tick)
 		Phase.OUTRO:
 			# The simulation keeps running: the last explosion must burn out.
 			_advance(delta)
 			if not _link_holds(delta):
 				return
 			if _match.confirmed_world().tick >= _end_tick:
+				if _networked():
+					_input.level_done(_end_tick)
 				_finish_level()
 		Phase.LOST_LINK:
 			# We do not leave at once: the caption must be readable first.
