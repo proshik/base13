@@ -328,6 +328,11 @@ Rakes we have already stepped on:
   sides' leads. `frozen` means the partner went quiet; stops that keep coming mean the
   network; a large `resim` with the speed below a hundred means the machine. `L` puts the last second's numbers on
   screen. Visible in the terminal on desktop and in the developer console in the browser.
+  Beside it, one `[net]` line an event: a level begins (with the slot), ends (the end
+  tick, the tick it ended in, the confirmed tick it was seen at — both sides must agree on
+  the first two), is done; and the first time a stand sends input again, with why. On the
+  server, the window line of a side still sending names a partner silent past a window,
+  and a side leaving says how long it had been silent.
 - **Restoring a world must write into the same `WorldState`.** `Combat`, `EnemyAi`,
   `Bonuses` and `Spawner` hold a reference to it; a restore that swapped the object left
   them computing the world that was thrown away. `SimSnapshot.copy_world` writes into the
