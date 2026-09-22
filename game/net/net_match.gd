@@ -86,6 +86,14 @@ func confirmed_world() -> WorldState:
 	var now: int = _sim.get_state().tick
 	return _world(mini(_source.confirmed(), now - 1) + 1)
 
+## The tick a level that has ended in the confirmed world stops on, `outro` ticks
+## later; -1 while it goes on.
+func level_end(outro: int) -> int:
+	var world := confirmed_world()
+	if not (world.level_cleared or world.game_over):
+		return -1
+	return world.tick + outro
+
 func _step_back(frame: Frame) -> void:
 	var from := _source.rollback_from()
 	if from < 0:

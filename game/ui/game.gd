@@ -164,9 +164,9 @@ func _process(delta: float) -> void:
 			_show_status(_network_status())
 			# Only a world both sides agree on ends a level: on a guess the base
 			# may have fallen that did not.
-			var world := _match.confirmed_world()
-			if world.level_cleared or world.game_over:
-				_end_tick = world.tick + OUTRO_TICKS
+			var end := _match.level_end(OUTRO_TICKS)
+			if end >= 0:
+				_end_tick = end
 				_match.set_horizon(_end_tick)
 				_phase = Phase.OUTRO
 		Phase.OUTRO:
