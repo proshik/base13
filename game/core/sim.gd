@@ -185,10 +185,12 @@ func _check_end_conditions() -> void:
 		return
 	if not _state.base_alive:
 		_state.game_over = true
+		_state.ended_at = _state.tick
 		_log.add(Types.Event.GAME_OVER, Consts.tile_to_unit(Consts.BASE_TILE))
 		return
 	if _state.enemies_left <= 0:
 		_state.level_cleared = true
+		_state.ended_at = _state.tick
 		_log.add(Types.Event.LEVEL_CLEARED)
 		return
 	var anyone_left := false
@@ -197,4 +199,5 @@ func _check_end_conditions() -> void:
 			anyone_left = true
 	if not anyone_left:
 		_state.game_over = true
+		_state.ended_at = _state.tick
 		_log.add(Types.Event.GAME_OVER)

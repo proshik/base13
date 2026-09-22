@@ -76,6 +76,35 @@ func test_level_cleared_when_no_enemies_left() -> void:
 	assert_true(sim.get_state().level_cleared)
 	assert_eq(_count(sim.drain_events(), Types.Event.LEVEL_CLEARED), 1)
 
+## The end is recorded as the tick of the world it happened in, and stays put:
+## both sides of a network game count the outro from it.
+func test_a_cleared_level_records_the_tick_it_ended_in() -> void:
+	assert_eq(sim.get_state().ended_at, -1, "a level going on has not ended")
+	for i in 3:
+		sim.tick([0, 0])
+	sim.get_state().enemies_left = 0
+	sim.tick([0, 0])
+	assert_eq(sim.get_state().ended_at, 4, "the world after tick three is tick four")
+	sim.tick([0, 0])
+	sim.tick([0, 0])
+	assert_eq(sim.get_state().ended_at, 4, "the end moved on with the ticks")
+
+func test_a_fallen_base_records_the_tick_it_fell_in() -> void:
+	sim.tick([0, 0])
+	sim.get_state().base_alive = false
+	sim.tick([0, 0])
+	assert_eq(sim.get_state().ended_at, 2)
+
+func test_the_last_life_lost_records_the_tick_too() -> void:
+	var s := sim.get_state()
+	for p in s.players:
+		p.lives = 0
+	s.find_tank(s.players[0].tank_id).alive = false
+	s.players[0].tank_id = -1
+	sim.tick([0, 0])
+	assert_true(s.game_over)
+	assert_eq(s.ended_at, 1)
+
 func test_drain_events_empties_the_queue() -> void:
 	sim.get_state().enemies_left = 0
 	sim.tick([0, 0])

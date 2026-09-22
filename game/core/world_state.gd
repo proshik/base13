@@ -16,6 +16,11 @@ var spawn_point_index := 0
 var players: Array = []        ## Entities.PlayerState
 var game_over := false
 var level_cleared := false
+## The tick of the world a level ended in — the first one with `game_over` or
+## `level_cleared` set — or -1 while it goes on. Both sides of a network game count
+## the outro from here: it follows from the ticks computed, not from the frame the
+## end was seen on. Not hashed, since it follows from the rest.
+var ended_at := -1
 
 var _next_id := 1
 

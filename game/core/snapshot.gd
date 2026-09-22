@@ -43,6 +43,7 @@ static func copy_world(src: WorldState, dst: WorldState) -> void:
 	dst.players = players
 	dst.game_over = src.game_over
 	dst.level_cleared = src.level_cleared
+	dst.ended_at = src.ended_at
 	dst._next_id = src._next_id
 
 static func _tank(s: Entities.Tank) -> Entities.Tank:
