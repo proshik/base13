@@ -338,9 +338,18 @@ Rakes we have already stepped on:
   dropped as "unknown", as the lockstep buffer did, a divergence would pass unseen.
 - **A level ends on a tick, not after a time.** The outro is `OUTRO_TICKS` past the
   confirmed end, with a horizon, so both sides carry the same score out. The count starts
-  from the tick the clear was *confirmed* on, a tick later than the one it happened on. A
-  partner leaving mid-outro is handled like one leaving mid-level, or the outro waits for
-  a confirmation that never comes.
+  from `WorldState.ended_at`, the tick of the world the clear happened in, which the core
+  records with the flag. A partner leaving mid-outro is handled like one leaving
+  mid-level, or the outro waits for a confirmation that never comes.
+- **The end of a level cannot be counted from the frame the end was seen on.** The
+  confirmed tick moves on as the partner's packets come, and they come in bunches: one
+  frame confirms a tick on one side and five on the other. Counted from the confirmed
+  world on the frame the clear showed up, two sides ended a level ticks apart — the
+  earlier finished and fell silent, the later stood for input that never came, and
+  neither said a word, since both were still in the room. It hung the game after
+  level 2 on 2026-09-16 and after level 3 on 2026-09-22. And a side standing at the
+  horizon sends its input again once a second, like one standing at the window: the
+  loop used to stop there before it asked, and one lost packet did the same.
 - **A bullet and a tank walk unit by unit, so nothing invariant may be asked inside the
   walk.** Thirty-two steps a tick each re-asked where the base was, which tanks were
   about and which cells were covered — none of which changes while they walk. Settling it
