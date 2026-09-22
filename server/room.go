@@ -9,6 +9,7 @@ import (
 	"errors"
 	"math/big"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -97,6 +98,29 @@ type Member struct {
 	// could not see coming would race it.
 	client client
 	stats  *stats
+	// When the member last sent the game a packet, in Unix nanoseconds; zero
+	// before the first. Written by the goroutine reading their connection and
+	// read by the one reading their partner's, hence atomic.
+	lastHeard atomic.Int64
+}
+
+// heard notes a game packet from the member.
+func (m *Member) heard(at time.Time) { m.lastHeard.Store(at.UnixNano()) }
+
+// quietFor is how long the member has sent the game nothing, or zero if they
+// never sent anything.
+func (m *Member) quietFor(now time.Time) time.Duration {
+	at := m.lastHeard.Load()
+	if at == 0 {
+		return 0
+	}
+	return now.Sub(time.Unix(0, at))
+}
+
+// silence is a member who has sent the game nothing for a while.
+type silence struct {
+	slot int
+	took time.Duration
 }
 
 // client is what a player's hello said about where they play from, already
@@ -327,6 +351,25 @@ func (r *Room) Leave(member *Member) {
 		// Not removed at once: whoever dropped out must have time to return.
 		r.emptyAt = time.Now()
 	}
+}
+
+// Silent lists the members other than self who have sent the game nothing for
+// longer than `longer`, in slot order. One who never sent anything is not
+// listed: a room that has just filled is not a room with a quiet side.
+func (r *Room) Silent(self *Member, now time.Time, longer time.Duration) []silence {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []silence
+	for slot := 0; slot < roomCapacity; slot++ {
+		m, ok := r.members[slot]
+		if !ok || m == self {
+			continue
+		}
+		if took := m.quietFor(now); took > longer {
+			out = append(out, silence{slot: slot, took: took})
+		}
+	}
+	return out
 }
 
 // Broadcast appends the packet to the journal and sends it to everyone except

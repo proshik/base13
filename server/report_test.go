@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -733,4 +734,38 @@ func TestTheReportedDelayTellsTheBuildsApart(t *testing.T) {
 		`relay_client_input_delay_ticks_sum`:            17,
 	})
 	checkExposition(t, renderMetrics(s))
+}
+
+func TestTheLogNamesASilentPartner(t *testing.T) {
+	// The hang between two levels was read off packet counts: one slot sent
+	// nothing for half a minute, the other sent bursts once a second. The window
+	// line of the side still sending now says who has gone quiet, and the line
+	// for a side leaving says how long it had been quiet.
+	// Not parallel: it takes over the package's log for its duration.
+	captured := &lockedBuffer{}
+	kept := log.Writer()
+	log.SetOutput(captured)
+	defer log.SetOutput(kept)
+
+	s := &server{hub: NewHub(), statsEvery: 50 * time.Millisecond}
+	addr, stop := serve(t, s)
+	defer stop()
+	host, guest, _ := seatPair(t, addr)
+	packet := []byte{1, 0, 0, 0, 0, 31}
+	host.send(t, packet)
+	expectPacket(t, guest, packet)
+	// The guest sends on past the host's last packet for a few windows.
+	for deadline := time.Now().Add(2 * time.Second); !strings.Contains(captured.String(), "slot 0 silent"); {
+		if time.Now().After(deadline) {
+			t.Fatalf("no window line named the silent host: %q", captured.String())
+		}
+		time.Sleep(20 * time.Millisecond)
+		guest.send(t, packet)
+		expectPacket(t, host, packet)
+	}
+	host.conn.Close()
+	eventually(t, func() bool { return strings.Contains(captured.String(), "left") })
+	if !regexp.MustCompile(`player 1 left, 1 remain, journal \d+ records, silent \d+m?s before`).MatchString(captured.String()) {
+		t.Fatalf("the host leaving did not say how long they had been silent: %q", captured.String())
+	}
 }

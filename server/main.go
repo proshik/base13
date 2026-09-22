@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"log"
 	"mime"
@@ -526,11 +527,18 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
+	every := s.statsInterval()
 	defer func() {
 		room.Leave(member)
 		room.Notify(member, event("left", room.Occupants()))
-		log.Printf("room %s: %s left, %d remain, journal %d records",
-			room.Code, slotName(member.Slot), room.Occupants(), room.JournalLength())
+		// A side that went quiet long before it left is the other half of a
+		// hang: its partner's lines named it silent, and this says for how long.
+		quiet := ""
+		if took := member.quietFor(time.Now()); took > every {
+			quiet = fmt.Sprintf(", silent %v before", roundQuiet(took))
+		}
+		log.Printf("room %s: %s left, %d remain, journal %d records%s",
+			room.Code, slotName(member.Slot), room.Occupants(), room.JournalLength(), quiet)
 	}()
 	room.Notify(member, event("joined", room.Occupants()))
 
@@ -547,7 +555,6 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 	// frame is born from a gap between packets, so we watch the worst gap
 	// rather than the average.
 	var flow arrivals
-	every := s.statsInterval()
 	window := time.Now()
 	// What this connection's reports have had taken so far. Only this goroutine
 	// reads the connection, so it needs no lock.
@@ -568,10 +575,18 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		flow.note(now)
+		member.heard(now)
 		if now.Sub(window) >= every {
-			log.Printf("room %s, slot %d: %.0fs, %d packets, worst gap %v",
+			// A partner quiet for longer than a window while this side sends is
+			// who this side is waiting for; their own line never comes, since a
+			// line is written only on a packet.
+			quiet := ""
+			for _, q := range room.Silent(member, now, every) {
+				quiet += fmt.Sprintf(", slot %d silent %v", q.slot, roundQuiet(q.took))
+			}
+			log.Printf("room %s, slot %d: %.0fs, %d packets, worst gap %v%s",
 				room.Code, member.Slot, now.Sub(window).Seconds(),
-				flow.count(), flow.worstGap().Round(time.Millisecond))
+				flow.count(), flow.worstGap().Round(time.Millisecond), quiet)
 			if flow.measured() {
 				s.hub.stats.observeWorstGap(flow.worstGap())
 			}
@@ -581,6 +596,14 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 		s.hub.stats.relayed(len(packet))
 		room.Broadcast(member, packet)
 	}
+}
+
+// roundQuiet rounds a silence for the log: whole seconds once it is past one.
+func roundQuiet(d time.Duration) time.Duration {
+	if d >= time.Second {
+		return d.Round(time.Second)
+	}
+	return d.Round(time.Millisecond)
 }
 
 // greet parses the housekeeping packet, seats the client in a room and, if

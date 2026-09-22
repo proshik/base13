@@ -934,3 +934,28 @@ func TestAQueuedPacketIsSmall(t *testing.T) {
 		t.Fatalf("a queued packet takes %d bytes, expected at most 40", size)
 	}
 }
+
+func TestSilentNamesAPartnerWhoStoppedSending(t *testing.T) {
+	// A side that stops sending while its connection stays up is what a hang
+	// looks like from here: the other side goes on, waiting. The partner's
+	// silence is read by whoever still sends, so it shows in their line.
+	room, _ := NewHub().Create("tanks", 1)
+	host, _ := room.Join()
+	guest, _ := room.Join()
+	t0 := time.Unix(1000, 0)
+	if got := room.Silent(guest, t0, 5*time.Second); len(got) != 0 {
+		t.Fatalf("a partner who never sent anything was called silent: %+v", got)
+	}
+	host.heard(t0)
+	guest.heard(t0.Add(30 * time.Second))
+	got := room.Silent(guest, t0.Add(30*time.Second), 5*time.Second)
+	if len(got) != 1 || got[0].slot != 0 || got[0].took != 30*time.Second {
+		t.Fatalf("the host silent for 30s was reported as %+v", got)
+	}
+	if got := room.Silent(host, t0.Add(30*time.Second), 5*time.Second); len(got) != 0 {
+		t.Fatalf("a guest who just sent was called silent: %+v", got)
+	}
+	if got := room.Silent(guest, t0.Add(4*time.Second), 5*time.Second); len(got) != 0 {
+		t.Fatalf("a gap shorter than a window was called silence: %+v", got)
+	}
+}
