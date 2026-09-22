@@ -635,7 +635,7 @@ and downloading them every time takes longer than everything else put together.
   9 tasks, TDD
 - [Homebrew cask plan](docs/plans/2026-09-04-homebrew-cask.md) —
   installation on macOS in one command; after the deployment
-- [CLAUDE.md](CLAUDE.md) — invariants that must not be broken
+- [AGENTS.md](AGENTS.md) — invariants that must not be broken
 
 ## Legal
 
