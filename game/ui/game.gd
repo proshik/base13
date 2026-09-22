@@ -163,7 +163,8 @@ func _process(delta: float) -> void:
 			# whatever stopped the picture gets named.
 			_show_status(_network_status())
 			# Only a world both sides agree on ends a level: on a guess the base
-			# may have fallen that did not.
+			# may have fallen that did not. And the outro counts from the world
+			# the end happened in, not the frame it was seen on — see level_end.
 			var end := _match.level_end(OUTRO_TICKS)
 			if end >= 0:
 				_end_tick = end

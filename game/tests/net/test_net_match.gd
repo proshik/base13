@@ -10,6 +10,16 @@ class Pipe:
 	var frame := 0
 	var lag := 0
 	var boxes := [[], []]   ## per side: [arrival_frame, tick, bits]
+	## One side's packets sent in [held_from, held_until) all arrive at held_until.
+	var held_side := -1
+	var held_from := 0
+	var held_until := 0
+
+	func arrival(to: int) -> int:
+		var at := frame + lag
+		if to == held_side and at >= held_from and at < held_until:
+			return held_until
+		return at
 
 class PipeInput extends InputSource:
 	var rollback: Rollback
@@ -39,7 +49,7 @@ class PipeInput extends InputSource:
 		sent_through = applied
 		var bits: int = frames[now][slot]
 		rollback.submit_local(applied, bits)
-		pipe.boxes[1 - slot].append([pipe.frame + pipe.lag, applied, bits])
+		pipe.boxes[1 - slot].append([pipe.arrival(1 - slot), applied, bits])
 
 	func can_predict(tick: int) -> bool:
 		return rollback.can_predict(tick)
@@ -169,3 +179,68 @@ func test_a_tick_going_forward_is_marked_so() -> void:
 	assert_gt(frame.ran, 0)
 	for step in frame.steps:
 		assert_true(step.forward)
+
+## A level that ends on a set tick whatever the players do: the last enemy is
+## counted off before tick ENDS_ON is computed.
+class EndingSim extends GameSim:
+	const ENDS_ON := 29
+
+	func _init() -> void:
+		super(Golden.level(), Golden.SEED, SimConfig.new(), Golden.LEVEL_NUMBER, 2)
+
+	func tick(inputs: Array) -> void:
+		if get_state().tick == ENDS_ON:
+			get_state().enemies_left = 0
+		super.tick(inputs)
+
+## The game screen's rule, frame by frame: once the confirmed world has ended the
+## outro is counted and the horizon set, and a side whose confirmed world reached
+## it has left the level and plays no more.
+func _play_to_the_end(pipe: Pipe, frames: Array) -> Array:
+	var sides: Array[NetMatch] = []
+	var ends := [-1, -1]
+	var done := [false, false]
+	for slot in 2:
+		sides.append(NetMatch.new(EndingSim.new(), PipeInput.new(pipe, slot, frames)))
+	for f in 1000:
+		pipe.frame = f
+		for slot in 2:
+			if done[slot]:
+				continue
+			var m := sides[slot]
+			m.advance(1.0 / 60.0)
+			if ends[slot] < 0:
+				ends[slot] = m.level_end(OUTRO)
+				if ends[slot] >= 0:
+					m.set_horizon(ends[slot])
+			elif m.confirmed_world().tick >= ends[slot]:
+				done[slot] = true
+		if done[0] and done[1]:
+			break
+	return [ends, done]
+
+const OUTRO := 90
+
+## The end of a level must be the same tick on both sides however the partner's
+## packets fell into frames. Here side one gets nothing for a stretch around the
+## clear and then all of it at once, while side zero gets a packet a frame. Counted
+## from the frame the clear was seen, the two ends came out apart: the earlier side
+## finished and fell silent, and the later stood for input that never came.
+func test_both_sides_end_a_level_on_the_same_tick() -> void:
+	var pipe := Pipe.new()
+	pipe.held_side = 1
+	pipe.held_from = 20
+	pipe.held_until = 40
+	var result := _play_to_the_end(pipe, Golden.frames())
+	var ends: Array = result[0]
+	var done: Array = result[1]
+	assert_gt(ends[0], 0, "side zero never saw the level end")
+	assert_eq(ends[1], ends[0], "the two sides end the level on different ticks")
+	assert_true(done[0] and done[1], "a side never reached the end of the level: %s" % [done])
+
+func test_with_packets_a_frame_apart_the_ends_match_too() -> void:
+	var result := _play_to_the_end(Pipe.new(), Golden.frames())
+	var ends: Array = result[0]
+	assert_gt(ends[0], 0)
+	assert_eq(ends[1], ends[0])
+	assert_eq(result[1], [true, true])

@@ -40,9 +40,11 @@ func test_a_cleared_level_ends_ninety_ticks_later() -> void:
 	for i in 200:
 		screen._process(FRAME)
 	assert_eq(screen._phase, screen.Phase.PLAY, "the level never began")
-	screen._sim.get_state().level_cleared = true
-	# The clear is noticed on the confirmed world, which is a tick further on than
-	# the one just set: the outro is counted from where it was seen.
+	# Cleared by the core, not by setting the flag: the outro is counted from the
+	# tick the core records with it.
+	screen._sim.get_state().enemies_left = 0
+	# Alone the world the clear happened in is the one it is seen in, a frame
+	# later: the outro is ninety ticks from either.
 	var seen_at := -1
 	for i in 10:
 		screen._process(FRAME)
@@ -50,6 +52,8 @@ func test_a_cleared_level_ends_ninety_ticks_later() -> void:
 			seen_at = screen._sim.get_state().tick
 			break
 	assert_gt(seen_at, 0, "the clear was never noticed")
+	assert_eq(screen._sim.get_state().ended_at, seen_at,
+		"alone the clear is seen in the world it happened in")
 	var frames := _run_until_finished(screen, 600)
 	assert_gt(frames, 0, "the level never finished")
 	assert_eq(screen._sim.get_state().tick, seen_at + screen.OUTRO_TICKS,
@@ -63,7 +67,7 @@ func test_the_campaign_gets_the_world_of_the_last_tick() -> void:
 	for i in 200:
 		screen._process(FRAME)
 	var state: WorldState = screen._sim.get_state()
-	state.level_cleared = true
+	state.enemies_left = 0
 	state.players[0].score = 4000
 	_run_until_finished(screen, 600)
 	assert_eq(screen._campaign.carryover()[0].score, 4000,

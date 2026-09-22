@@ -87,12 +87,19 @@ func confirmed_world() -> WorldState:
 	return _world(mini(_source.confirmed(), now - 1) + 1)
 
 ## The tick a level that has ended in the confirmed world stops on, `outro` ticks
-## later; -1 while it goes on.
+## after the world it ended in; -1 while it goes on.
+##
+## Counted from the world the end happened in, never from the one it was seen in:
+## the confirmed tick moves on as the partner's packets come, and they come in
+## bunches — one frame confirms a tick on one side and five on the other. Two ends
+## counted from there came out ticks apart; the earlier side finished and fell
+## silent, and the later stood for input that would never come. Alone the two are
+## the same world, so a level alone ends where it always did.
 func level_end(outro: int) -> int:
 	var world := confirmed_world()
 	if not (world.level_cleared or world.game_over):
 		return -1
-	return world.tick + outro
+	return world.ended_at + outro
 
 func _step_back(frame: Frame) -> void:
 	var from := _source.rollback_from()
