@@ -62,6 +62,7 @@ func advance(delta: float) -> Frame:
 	for i in due:
 		var t: int = _sim.get_state().tick
 		if _horizon != NO_HORIZON and t >= _horizon:
+			_source.stand_at_horizon(t)
 			break
 		_source.capture(t)
 		if not _source.can_predict(t):

@@ -48,6 +48,11 @@ func rollback_from() -> int:
 func clear_rollback() -> void:
 	pass
 
+## The ticks stand at the end of a level's horizon; this tick is not computed.
+## Alone, there is nothing to wait for there.
+func stand_at_horizon(_tick: int) -> void:
+	pass
+
 ## Whether to let this tick pass uncomputed and fall back into step with the
 ## partner.
 func should_skip(_tick: int) -> bool:

@@ -158,6 +158,21 @@ func can_predict(tick: int) -> bool:
 		_waiting_tick = -1
 		return true
 	_stall_run += 1
+	_stand(tick, now)
+	return false
+
+## The last tick of a level is computed, and the level ends once the partner's
+## input confirms it. Until then this is a stand like any other: a packet lost here
+## held the game for good, the partner on the next level and us on this one. Only
+## what was sent goes out again; nothing is captured past the horizon.
+func stand_at_horizon(tick: int) -> void:
+	if desynced or _rollback.confirmed() >= tick - 1:
+		return
+	_stand(tick, _clock())
+
+## A tick standing: once it has stood RESEND_MS on a live link, our recent input
+## goes out again, and again every RESEND_MS.
+func _stand(tick: int, now: int) -> void:
 	if tick != _waiting_tick:
 		_waiting_tick = tick
 		_wait_began = now
@@ -165,7 +180,6 @@ func can_predict(tick: int) -> bool:
 			and _link.linked():
 		_resent_at = now
 		_send_again()
-	return false
 
 ## A stop shorter than a tick is no stop: at 144 Hz the tick was asked for early.
 ## One longer than FROZEN_MS is a stand, counted apart.

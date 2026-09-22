@@ -193,6 +193,64 @@ func test_a_tick_standing_a_second_on_a_live_link_sends_input_again() -> void:
 	net.can_predict(tick)
 	assert_true(link.wire.has(Rollback.START), "the stand never sent our input again")
 
+## The end of a level stops the ticks at the horizon, and a side standing there
+## for the partner's word on its last ticks waits just as it would at the window:
+## a packet lost there held the game for good. It sends again what it sent, and
+## nothing past it.
+func test_standing_at_the_horizon_sends_input_again() -> void:
+	var link := Flaky.new()
+	var net := Clocked.new(link, 0, func(_t: int) -> int: return 0)
+	var horizon := Rollback.START + 6
+	for t in horizon:
+		net.capture(t)
+		net.note_tick(t)
+	var sent := link.wire.duplicate()
+	net.stand_at_horizon(horizon)
+	link.wire.clear()
+	net.now += NetInput.RESEND_MS - 1
+	net.stand_at_horizon(horizon)
+	assert_eq(link.wire, [] as Array[int], "sent again before a second had passed")
+	net.now += 1
+	net.stand_at_horizon(horizon)
+	assert_true(link.wire.has(Rollback.START), "the stand at the horizon never sent our input again")
+	for tick in link.wire:
+		assert_true(sent.has(tick), "tick %d went out past what was sent before the horizon" % tick)
+
+func test_a_confirmed_horizon_sends_nothing_again() -> void:
+	var link := Flaky.new()
+	var net := Clocked.new(link, 0, func(_t: int) -> int: return 0)
+	var horizon := Rollback.START + 6
+	for t in horizon:
+		net.capture(t)
+		net.note_tick(t)
+		net.handle_packet(Protocol.pack_input(t, 0))
+	link.wire.clear()
+	for i in 3:
+		net.stand_at_horizon(horizon)
+		net.now += NetInput.RESEND_MS
+	assert_eq(link.wire, [] as Array[int], "nothing is owed, yet input went out again")
+
+## The same through NetMatch: the loop stops at the horizon before it would ask
+## whether a tick may be computed, so the stand has to be named there.
+func test_a_match_standing_at_the_horizon_sends_input_again() -> void:
+	var link := Flaky.new()
+	var net := Clocked.new(link, 0, func(_t: int) -> int: return 0)
+	var sim := GameSim.new(Golden.level(), Golden.SEED, SimConfig.new(), Golden.LEVEL_NUMBER, 2)
+	var m := NetMatch.new(sim, net)
+	var horizon := Rollback.START + 6
+	m.set_horizon(horizon)
+	for i in 30:
+		net.now += 16
+		m.advance(1.0 / 60.0)
+	assert_eq(sim.get_state().tick, horizon, "the match never reached the horizon")
+	var sent_through: int = link.wire.max()
+	link.wire.clear()
+	net.now += NetInput.RESEND_MS
+	m.advance(1.0 / 60.0)
+	assert_true(link.wire.has(Rollback.START), "the match stood at the horizon and sent nothing again")
+	assert_lte(link.wire.max() if not link.wire.is_empty() else 0, sent_through,
+		"input went out past the horizon")
+
 func test_without_word_from_the_partner_nothing_is_skipped() -> void:
 	for t in 60:
 		input.note_tick(t)
