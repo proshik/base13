@@ -86,6 +86,8 @@ var _calm_edge := -1
 ## Set when a stand past FROZEN_MS ends, until the lead it left is shed.
 var _recovering := false
 var _recovery_skips := 0
+## When the frame before this one began, for the longest frame; -1 before the first.
+var _frame_at := -1
 var _report := Tally.new()
 
 ## What a stretch of play looked like.
@@ -100,6 +102,7 @@ class Tally:
 	var deepest := 0
 	var resim_us := 0
 	var skips := 0
+	var longest_frame_ms := 0
 
 ## bits_provider is a seam for tests, like the keyboard's: in headless a real key
 ## poll always yields zero. fps_provider is the same for the frame rate the report
@@ -118,11 +121,22 @@ func _init(link: Link, local_index: int, bits_provider := Callable(),
 	_was_linked = _link.linked()
 
 func pump() -> void:
+	_note_frame()
 	_link.poll()
 	var linked := _link.linked()
 	if linked and not _was_linked:
 		_send_again("link back")
 	_was_linked = linked
+
+## A frame far longer than a tick is this machine standing still: nothing goes
+## out while it stands, and the server and the partner see a gap in our stream
+## that reads exactly like a network holding our packets. The line says which.
+## Called once a frame, as `pump` is.
+func _note_frame() -> void:
+	var now := _clock()
+	if _frame_at >= 0:
+		_report.longest_frame_ms = maxi(_report.longest_frame_ms, now - _frame_at)
+	_frame_at = now
 
 ## Our recent input, out again. After a drop: the relay journals only what reached
 ## it and replays to a returning side the partner's stream, never their own. And
@@ -238,7 +252,7 @@ func level_ends(end_tick: int, ended_at: int, seen_at: int) -> void:
 func level_done(tick: int) -> void:
 	_log("level %d done on tick %d" % [_level, tick])
 
-## One line an event, next to the `[net]` report. A seam for tests.
+## One line an event, and the `[net]` report itself. A seam for tests.
 func _log(line: String) -> void:
 	print("[net] " + line)
 
@@ -364,14 +378,16 @@ func _desync(tick: int) -> void:
 ## partner went quiet. `rollbacks` and `deepest` say how often
 ## and how far guesses were wrong; `resim` is the time that cost this machine. Speed
 ## below 100 with no stops and a large resim means the machine, not the network.
+## The longest frame far past a tick is this machine standing still, whatever the
+## speed: it catches the time up afterwards.
 func _print_report() -> void:
 	var elapsed := maxi(1, _clock() - _report.began)
 	var expected := REPORT_EVERY * 1000 / 60
 	var speed := expected * 100 / elapsed
-	print("[net] %d ticks in %d ms (norm %d), speed %d%%, stops %d (longest %d ms), frozen %d (longest %d ms), rollbacks %d (deepest %d), resim %d ms, skips %d, lead %d against %d" % [
+	_log("%d ticks in %d ms (norm %d), speed %d%%, stops %d (longest %d ms), frozen %d (longest %d ms), rollbacks %d (deepest %d), resim %d ms, skips %d, lead %d against %d, longest frame %d ms" % [
 		REPORT_EVERY, elapsed, expected, speed, _report.stops, _report.longest_ms,
 		_report.frozen, _report.frozen_longest_ms, _report.rollbacks, _report.deepest, _report.resim_us / 1000, _report.skips,
-		_lead() if _partner_heard() else 0, _partner_lead])
+		_lead() if _partner_heard() else 0, _partner_lead, _report.longest_frame_ms])
 	_link.report_pace({"speed": speed, "waits": _report.stops,
 		"delay": Rollback.INPUT_DELAY, "fps": _fps()})
 

@@ -497,3 +497,25 @@ func test_matching_hashes_report_no_desync() -> void:
 	net.after_confirmed(60, 12345)
 	net.handle_packet(Protocol.pack_hash(60, 12345))
 	assert_eq(link.desyncs, 0)
+
+## A frame far longer than a tick is this machine standing still. It sends
+## nothing meanwhile, and the server's window line cannot tell that from a
+## network holding our packets: on 2026-09-24 one side's stream stood for
+## 100-460 ms nearly every five seconds, and nobody could say which. The line
+## says how long the longest frame of its stretch took, and starts over after.
+func test_the_line_says_how_long_the_longest_frame_took() -> void:
+	var net := Logged.new(Reporter.new(), 0, func(_t: int) -> int: return 0)
+	for t in NetInput.REPORT_EVERY * 2:
+		net.pump()
+		net.capture(t)
+		if t - 12 >= Rollback.START:
+			net.handle_packet(Protocol.pack_input(t - 12, 0))
+		assert_true(net.can_predict(t), "tick %d is not computed" % t)
+		net.note_tick(t)
+		net.now += 240 if t == 100 else 1000 / 60
+	var lines := net.lines.filter(func(l: String) -> bool: return l.contains("ticks in"))
+	assert_eq(lines.size(), 2, "one line a stretch: %s" % [net.lines])
+	if lines.size() != 2:
+		return
+	assert_string_contains(lines[0], "longest frame 240 ms")
+	assert_string_contains(lines[1], "longest frame 16 ms")
