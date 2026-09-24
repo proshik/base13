@@ -35,6 +35,9 @@ const GIVE_UP_MS := 30000  ## holding the game open longer is pointless
 ## the other end.
 const HEARTBEAT_SECONDS := 10.0
 
+## The figures of a pace report every server that takes reports reads.
+const OLDER_PACE := ["speed", "waits", "delay", "fps"]
+
 var state := State.IDLE
 var code := ""
 var slot := 0
@@ -61,6 +64,11 @@ var _client := {}
 ## a return after a drop included: the server on the other end may have been
 ## replaced by an older one in between.
 var _reports := false
+## Whether the last welcome said the server also takes the current shapes: the
+## report with every figure of the `[net]` line, a desync with its tick, and
+## notes. 0.6.4 takes reports but reads each of these as malformed, so it is
+## told the older shapes. Taken again from every welcome, like `_reports`.
+var _notes := false
 
 ## now_provider is a seam for tests: otherwise the retry deadlines would have to
 ## be waited out for real. client is the same kind of seam for what the hello
@@ -177,6 +185,7 @@ func _handle_welcome(answer: Dictionary) -> void:
 		return
 	slot = given
 	_reports = bool(answer.get("reports", false))
+	_notes = bool(answer.get("notes", false))
 	code = str(answer.get("code", code))
 	seed_value = int(answer.get("seed", seed_value))
 	players = int(answer.get("players", 1))
@@ -251,10 +260,26 @@ func send(data: PackedByteArray) -> void:
 ## over ints — `JSON.stringify` writes an int as `97` and a float as `97.0`, and a
 ## fractional frame rate would make the whole report malformed.
 func report_pace(pace: Dictionary) -> void:
-	_report({"report": pace})
+	if _notes:
+		_report({"report": pace})
+		return
+	# A server that takes no notes takes the four figures and nothing else.
+	var older := {}
+	for key in OLDER_PACE:
+		if pace.has(key):
+			older[key] = pace[key]
+	_report({"report": older})
 
-func report_desync() -> void:
-	_report({"desync": true})
+func report_desync(tick := -1) -> void:
+	_report({"desync": tick if _notes and tick >= 0 else true})
+
+## Only to a server that announced notes: to any other one it is malformed.
+func report_note(what: String, figures := {}) -> void:
+	if not _notes:
+		return
+	var note := {"what": what}
+	note.merge(figures)
+	_report({"note": note})
 
 ## Nothing goes to a server that did not announce reports, and nothing goes while
 ## the link is not up: a report queued on a dying socket is lost anyway, and one

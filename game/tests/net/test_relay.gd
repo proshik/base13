@@ -144,6 +144,48 @@ func test_a_report_goes_as_text_not_as_a_packet() -> void:
 		'{"desync":true}',
 	] as Array[String])
 
+const FULL_PACE := {"speed": 97, "waits": 2, "delay": 2, "fps": 60, "frozen": 1,
+	"frozen_longest_ms": 2400, "stops_longest_ms": 120, "rollbacks": 40, "deepest": 9,
+	"resim_ms": 12, "skips": 3, "lead": 4, "partner_lead": -1, "longest_frame_ms": 250}
+
+## A server that takes reports but not notes — 0.6.4 — reads a report with more
+## than its four figures, a desync with a tick and any note as malformed. It is
+## told what it reads, as before; only a server whose welcome announced notes
+## hears the rest, and the log that server keeps is where they go.
+func test_the_current_shapes_go_only_to_a_server_that_takes_notes() -> void:
+	var older := _seated({"ok": true, "slot": 0, "code": "ABCDEF", "players": 2, "reports": true})
+	older.report_pace(FULL_PACE)
+	older.report_desync(60)
+	older.report_note("stage_begins", {"stage": 3})
+	older.report_note("hidden")
+	assert_eq(older.texts, [
+		'{"report":{"speed":97,"waits":2,"delay":2,"fps":60}}',
+		'{"desync":true}',
+	] as Array[String])
+
+	var current := _seated({"ok": true, "slot": 0, "code": "ABCDEF", "players": 2, "reports": true,
+		"notes": true})
+	current.report_pace(FULL_PACE)
+	current.report_desync(60)
+	current.report_note("stage_begins", {"stage": 3})
+	current.report_note("hidden")
+	assert_eq(current.texts, [
+		'{"report":{"speed":97,"waits":2,"delay":2,"fps":60,"frozen":1,"frozen_longest_ms":2400,'
+			+ '"stops_longest_ms":120,"rollbacks":40,"deepest":9,"resim_ms":12,"skips":3,"lead":4,'
+			+ '"partner_lead":-1,"longest_frame_ms":250}}',
+		'{"desync":60}',
+		'{"note":{"what":"stage_begins","stage":3}}',
+		'{"note":{"what":"hidden"}}',
+	] as Array[String])
+
+	# A return to a server that no longer takes notes goes back to the four.
+	current._resuming = true
+	current._handle_welcome({"ok": true, "slot": 0, "code": "ABCDEF", "players": 2, "reports": true})
+	current.texts.clear()
+	current.report_pace(FULL_PACE)
+	current.report_note("visible")
+	assert_eq(current.texts, ['{"report":{"speed":97,"waits":2,"delay":2,"fps":60}}'] as Array[String])
+
 func test_a_fresh_relay_reports_nothing() -> void:
 	var relay := Relay.new(Callable(), {"platform": "linux", "version": "1.2.3"})
 	relay.report_pace(PACE)
@@ -624,12 +666,20 @@ func test_the_server_counts_what_the_client_reports() -> void:
 	var guest := Relay.new(Callable(), {"platform": "web", "version": "1.2.3"})
 	assert_true(_pair(host, guest), "the pair did not come together")
 	assert_true(host._reports, "the server's welcome did not announce reports")
+	assert_true(host._notes, "the server's welcome did not announce notes")
 	var to_guest := []
 	guest.packet_received.connect(func(data: PackedByteArray) -> void: to_guest.append(data))
 
-	# The figures test_net_input.gd sees NetInput hand to its link.
-	host.report_pace({"speed": 99, "waits": 5, "delay": 8, "fps": 60})
-	host.report_desync()
+	# The shapes test_net_input.gd sees NetInput hand to its link: none of them
+	# may read as malformed. The notes go first: the server reads in order, so
+	# once the window and the desync behind them are counted, so are they.
+	host.report_note("stage_ends", {"stage": 3, "tick": 1234, "ended": 1144, "seen": 1146})
+	host.report_note("stood", {"stage": 3, "tick": 17, "ms": 1000, "confirmed": 4, "from": 5, "through": 19})
+	host.report_note("blur")
+	var pace := FULL_PACE.duplicate()
+	pace.merge({"speed": 99, "waits": 5, "delay": 8}, true)
+	host.report_pace(pace)
+	host.report_desync(60)
 	var page := [""]
 	var counted := _spin([host, guest], func() -> bool:
 		page[0] = _scrape(metrics_port)

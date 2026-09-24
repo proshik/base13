@@ -268,6 +268,20 @@ func test_a_level_says_where_it_ends_and_that_it_is_done() -> void:
 		"level 3 done on tick 1234",
 	] as Array[String])
 
+## The same events, told to the server: its log is where a hang between two
+## levels is read when nobody kept the browser's console.
+func test_the_level_events_go_to_the_server() -> void:
+	var link := Reporter.new()
+	var net := Logged.new(link, 1, func(_t: int) -> int: return 0)
+	net.level_began(3)
+	net.level_ends(1234, 1144, 1146)
+	net.level_done(1234)
+	assert_eq(link.notes, [
+		["stage_begins", {"stage": 3}],
+		["stage_ends", {"stage": 3, "tick": 1234, "ended": 1144, "seen": 1146}],
+		["stage_done", {"stage": 3, "tick": 1234}],
+	])
+
 ## A stand says once why input went out again, not once a second.
 func test_a_stand_at_the_horizon_is_told_once() -> void:
 	var link := Flaky.new()
@@ -297,6 +311,52 @@ func test_a_stand_at_the_window_is_told_once() -> void:
 	assert_eq(net.lines.size(), 2, "%s" % [net.lines])
 	assert_eq(net.lines[1], "level 2: tick %d stood 1000 ms, confirmed through %d, input sent again for %d..%d"
 		% [tick, Rollback.START - 1, Rollback.START, 20 + Rollback.INPUT_DELAY])
+
+## And the server hears it the same once, with the figures of the line.
+func test_a_stand_tells_the_server_once() -> void:
+	var link := Reporter.new()
+	var net := Logged.new(link, 0, func(_t: int) -> int: return 0)
+	net.level_began(2)
+	_capture_through(net, 20)
+	var tick := Rollback.START + Rollback.MAX_ROLLBACK
+	for i in 4:
+		net.can_predict(tick)
+		net.now += NetInput.RESEND_MS
+	assert_eq(link.notes, [
+		["stage_begins", {"stage": 2}],
+		["stood", {"stage": 2, "tick": tick, "ms": 1000, "confirmed": Rollback.START - 1,
+			"from": Rollback.START, "through": 20 + Rollback.INPUT_DELAY}],
+	])
+
+func test_a_stand_at_the_horizon_tells_the_server() -> void:
+	var link := Reporter.new()
+	var net := Logged.new(link, 0, func(_t: int) -> int: return 0)
+	net.level_began(3)
+	var horizon := Rollback.START + 6
+	for t in horizon:
+		net.capture(t)
+		net.note_tick(t)
+	for i in 3:
+		net.stand_at_horizon(horizon)
+		net.now += NetInput.RESEND_MS
+	assert_eq(link.notes.size(), 2, "%s" % [link.notes])
+	assert_eq(link.notes[-1], ["horizon", {"stage": 3, "tick": horizon, "ms": 1000,
+		"confirmed": Rollback.START - 1, "from": Rollback.START,
+		"through": horizon - 1 + Rollback.INPUT_DELAY}])
+
+## A link that comes back lets the server hear why input came again, which in
+## its window line otherwise reads as a burst held by the network.
+func test_a_link_back_tells_the_server() -> void:
+	var link := FlakyReporter.new()
+	var net := Logged.new(link, 0, func(_t: int) -> int: return 0)
+	net.level_began(1)
+	_capture_through(net, 8)
+	link.up = false
+	net.pump()
+	link.up = true
+	net.pump()
+	assert_eq(link.notes[-1], ["link_back", {"stage": 1, "from": Rollback.START,
+		"through": 8 + Rollback.INPUT_DELAY}])
 
 func test_a_link_back_is_told() -> void:
 	var link := Flaky.new()
@@ -449,10 +509,31 @@ func test_the_lead_goes_out_every_few_ticks() -> void:
 class Reporter extends Link:
 	var paces: Array[Dictionary] = []
 	var desyncs := 0
+	var desync_ticks: Array[int] = []
+	var notes: Array = []   ## [what, figures] pairs
 	func report_pace(pace: Dictionary) -> void:
 		paces.append(pace)
-	func report_desync() -> void:
+	func report_desync(tick := -1) -> void:
 		desyncs += 1
+		desync_ticks.append(tick)
+	func report_note(what: String, figures := {}) -> void:
+		notes.append([what, figures])
+
+## A Reporter that goes down and comes back, the way Flaky does.
+class FlakyReporter extends Reporter:
+	var up := true
+	func linked() -> bool:
+		return up
+
+## The four figures every server reads, out of a report of the current shape.
+func _four(pace: Dictionary) -> Dictionary:
+	return {"speed": pace.get("speed"), "waits": pace.get("waits"), "delay": pace.get("delay"),
+		"fps": pace.get("fps")}
+
+## Every figure of the `[net]` line, under the names the server reads them by.
+const PACE_KEYS := ["speed", "waits", "delay", "fps", "frozen", "frozen_longest_ms",
+	"stops_longest_ms", "rollbacks", "deepest", "resim_ms", "skips", "lead", "partner_lead",
+	"longest_frame_ms"]
 
 ## Three hundred ticks, the partner's input twelve ticks behind; every sixtieth
 ## tick from the thirtieth it is thirteen behind for fifty milliseconds — a stop.
@@ -480,7 +561,12 @@ func test_each_line_sends_one_report() -> void:
 	if link.paces.size() != 1:
 		return
 	# 299 ticks of 16 ms and five stops of 50 took 5034 ms against 5000 due: 99 %.
-	assert_eq(link.paces[0], {"speed": 99, "waits": 5, "delay": Rollback.INPUT_DELAY, "fps": 60})
+	assert_eq(_four(link.paces[0]), {"speed": 99, "waits": 5, "delay": Rollback.INPUT_DELAY, "fps": 60})
+	assert_eq(link.paces[0].keys(), PACE_KEYS, "the report is not every figure of the line")
+	assert_eq(link.paces[0]["stops_longest_ms"], 50)
+	assert_eq(link.paces[0]["frozen"], 0)
+	# Twelve ticks behind as their input shows it, which is the delay less.
+	assert_eq(link.paces[0]["lead"], 12 + Rollback.INPUT_DELAY)
 	for key in link.paces[0]:
 		assert_eq(typeof(link.paces[0][key]), TYPE_INT, "%s is not a whole number" % key)
 
@@ -497,7 +583,10 @@ func test_a_long_stand_is_not_reported_as_a_wait() -> void:
 	if link.paces.size() != 1:
 		return
 	# 299 ticks of 16 ms, four stops of 50 and a stand of 200: 5184 ms, 96 %.
-	assert_eq(link.paces[0], {"speed": 96, "waits": 4, "delay": Rollback.INPUT_DELAY, "fps": 60})
+	assert_eq(_four(link.paces[0]), {"speed": 96, "waits": 4, "delay": Rollback.INPUT_DELAY, "fps": 60})
+	# The stand itself goes to the server's log, apart.
+	assert_eq(link.paces[0]["frozen"], 1)
+	assert_eq(link.paces[0]["frozen_longest_ms"], NetInput.FROZEN_MS + 50)
 	assert_string_contains(net.last_report, "STOP 4 FRZ 1")
 
 func test_a_desync_is_reported_once() -> void:
@@ -511,6 +600,7 @@ func test_a_desync_is_reported_once() -> void:
 	assert_true(net.desynced)
 	assert_eq(link.desyncs, 1, "the same desync was reported twice")
 	assert_eq(net.desync_tick, 60, "the first divergence is the one to show")
+	assert_eq(link.desync_ticks, [60] as Array[int], "the server was not told the tick")
 
 func test_matching_hashes_report_no_desync() -> void:
 	var link := Reporter.new()

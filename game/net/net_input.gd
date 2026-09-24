@@ -127,7 +127,7 @@ func pump() -> void:
 	_link.poll()
 	var linked := _link.linked()
 	if linked and not _was_linked:
-		_send_again("link back")
+		_send_again("link back", "link_back")
 	_was_linked = linked
 
 ## A frame far longer than a tick is this machine standing still: nothing goes
@@ -145,13 +145,15 @@ func _note_frame() -> void:
 ## once a second while a tick stands on a live link: a partner still finishing the
 ## last level behind a hidden tab takes our new level's first input into their old
 ## one. Duplicates are ignored on the other side. `why`, when given, goes into
-## the log with the ticks that went out.
-func _send_again(why := "") -> void:
+## the log with the ticks that went out, and to the server as the note named
+## `note` with `figures` and the ticks.
+func _send_again(why := "", note := "", figures := {}) -> void:
 	var from := maxi(Rollback.START, _last_tick - RESEND_BACK)
 	for tick in range(from, _sent_through + 1):
 		_link.send(Protocol.pack_input(tick, _rollback.local_input(tick)))
 	if why != "":
 		_log("level %d: %s, input sent again for %d..%d" % [_level, why, from, _sent_through])
+		_link.report_note(note, figures.merged({"stage": _level, "from": from, "through": _sent_through}))
 
 ## `WebSocketPeer.send()` only queues; `poll()` writes. Without this a press would
 ## sit until the next frame.
@@ -190,7 +192,7 @@ func can_predict(tick: int) -> bool:
 		_waiting_tick = -1
 		return true
 	_stall_run += 1
-	_stand(tick, now, "tick %d stood %%d ms, confirmed through %d" % [tick, _rollback.confirmed()])
+	_stand(tick, now, "tick %d stood %%d ms, confirmed through %d" % [tick, _rollback.confirmed()], "stood")
 	return false
 
 ## The last tick of a level is computed, and the level ends once the partner's
@@ -201,12 +203,13 @@ func stand_at_horizon(tick: int) -> void:
 	if desynced or _rollback.confirmed() >= tick - 1:
 		return
 	_stand(tick, _clock(), "standing at the horizon %d for %%d ms, confirmed through %d"
-		% [tick, _rollback.confirmed()])
+		% [tick, _rollback.confirmed()], "horizon")
 
 ## A tick standing: once it has stood RESEND_MS on a live link, our recent input
-## goes out again, and again every RESEND_MS. The first time says so in the log;
-## `what` names the stand, with a `%d` for how long it has stood.
-func _stand(tick: int, now: int, what: String) -> void:
+## goes out again, and again every RESEND_MS. The first time says so in the log
+## and to the server; `what` names the stand, with a `%d` for how long it has
+## stood, and `note` is the server's word for it.
+func _stand(tick: int, now: int, what: String, note: String) -> void:
 	if tick != _waiting_tick:
 		_waiting_tick = tick
 		_wait_began = now
@@ -215,10 +218,12 @@ func _stand(tick: int, now: int, what: String) -> void:
 			and _link.linked():
 		_resent_at = now
 		var why := ""
+		var figures := {}
 		if not _stand_told:
 			why = what % [now - _wait_began]
+			figures = {"tick": tick, "ms": now - _wait_began, "confirmed": _rollback.confirmed()}
 			_stand_told = true
-		_send_again(why)
+		_send_again(why, note, figures)
 
 ## A stop shorter than a tick is no stop: at 144 Hz the tick was asked for early.
 ## One longer than FROZEN_MS is a stand, counted apart.
@@ -241,18 +246,24 @@ func _end_wait(ms: int) -> void:
 ## The level this input plays has begun. Each level gets its own NetInput, and the
 ## lines below are what a hang between two levels is read from: which level each
 ## side is on, where each one ends it and whether it got there.
+##
+## Each goes to the server as well, whose log is read when nobody kept the
+## browser's console. The server calls a level a stage: it knows no game.
 func level_began(level: int) -> void:
 	_level = level
 	_log("level %d begins, slot %d" % [level, _slot])
+	_link.report_note("stage_begins", {"stage": level})
 
 ## The confirmed world has ended the level: the tick it stops on, the tick of the
 ## world it ended in and the confirmed tick it was seen at. Both sides must print
 ## the same first two.
 func level_ends(end_tick: int, ended_at: int, seen_at: int) -> void:
 	_log("level %d ends on tick %d: ended in %d, seen at %d" % [_level, end_tick, ended_at, seen_at])
+	_link.report_note("stage_ends", {"stage": _level, "tick": end_tick, "ended": ended_at, "seen": seen_at})
 
 func level_done(tick: int) -> void:
 	_log("level %d done on tick %d" % [_level, tick])
+	_link.report_note("stage_done", {"stage": _level, "tick": tick})
 
 ## One line an event, and the `[net]` report itself. A seam for tests.
 func _log(line: String) -> void:
@@ -390,7 +401,7 @@ func _desync(tick: int) -> void:
 		return
 	desynced = true
 	desync_tick = tick
-	_link.report_desync()
+	_link.report_desync(tick)
 
 ## What to read: `stops` are times the game stood past the window for a moment —
 ## the path is longer than 200 ms; `frozen` are stands longer than FROZEN_MS — the
@@ -399,16 +410,24 @@ func _desync(tick: int) -> void:
 ## below 100 with no stops and a large resim means the machine, not the network.
 ## The longest frame far past a tick is this machine standing still, whatever the
 ## speed: it catches the time up afterwards.
+##
+## The server hears every figure of the line; one that takes no notes, the first
+## four only — see `Relay.report_pace`.
 func _print_report() -> void:
 	var elapsed := maxi(1, _clock() - _report.began)
 	var expected := REPORT_EVERY * 1000 / 60
 	var speed := expected * 100 / elapsed
+	var lead := _lead() if _partner_heard() else 0
 	_log("%d ticks in %d ms (norm %d), speed %d%%, stops %d (longest %d ms), frozen %d (longest %d ms), rollbacks %d (deepest %d), resim %d ms, skips %d, lead %d against %d, longest frame %d ms" % [
 		REPORT_EVERY, elapsed, expected, speed, _report.stops, _report.longest_ms,
 		_report.frozen, _report.frozen_longest_ms, _report.rollbacks, _report.deepest, _report.resim_us / 1000, _report.skips,
-		_lead() if _partner_heard() else 0, _partner_lead, _report.longest_frame_ms])
+		lead, _partner_lead, _report.longest_frame_ms])
 	_link.report_pace({"speed": speed, "waits": _report.stops,
-		"delay": Rollback.INPUT_DELAY, "fps": _fps()})
+		"delay": Rollback.INPUT_DELAY, "fps": _fps(),
+		"frozen": _report.frozen, "frozen_longest_ms": _report.frozen_longest_ms,
+		"stops_longest_ms": _report.longest_ms, "rollbacks": _report.rollbacks,
+		"deepest": _report.deepest, "resim_ms": _report.resim_us / 1000, "skips": _report.skips,
+		"lead": lead, "partner_lead": _partner_lead, "longest_frame_ms": _report.longest_frame_ms})
 
 func _overlay_line() -> String:
 	var elapsed := maxi(1, _clock() - _report.began)

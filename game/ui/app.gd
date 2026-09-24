@@ -30,6 +30,9 @@ var _desync_tick := -1
 func _ready() -> void:
 	_set_icon()
 	_fit_window()
+	var presence := Presence.new()
+	presence.changed.connect(_on_presence)
+	add_child(presence)
 	_best = ScoreStore.load_best()
 	if _wants_selftest():
 		_run_selftest()
@@ -166,6 +169,15 @@ func _drop_link() -> void:
 		_link = null
 	_net_seed = 0
 	_local_index = 0
+
+## A tab or window going out of sight or focus, in a network game told to the
+## server as well as to the console: it is what tells a player looking elsewhere
+## from a lag. Outside a network game there is nobody to tell.
+func _on_presence(what: String) -> void:
+	if _link == null:
+		return
+	print("[net] " + what)
+	_link.report_note(what)
 
 func _new_seed() -> int:
 	return int(Time.get_unix_time_from_system() * 1000.0) & 0xFFFFFFFF
