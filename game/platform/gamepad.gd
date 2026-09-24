@@ -39,3 +39,26 @@ static func bits(device: int) -> int:
 		Input.is_joy_button_pressed(pad, JOY_BUTTON_A)
 			or Input.is_joy_button_pressed(pad, JOY_BUTTON_B),
 		stick)
+
+const BUTTON_BITS := {
+	JOY_BUTTON_DPAD_UP: Types.IN_UP, JOY_BUTTON_DPAD_DOWN: Types.IN_DOWN,
+	JOY_BUTTON_DPAD_LEFT: Types.IN_LEFT, JOY_BUTTON_DPAD_RIGHT: Types.IN_RIGHT,
+	JOY_BUTTON_A: Types.IN_FIRE, JOY_BUTTON_B: Types.IN_FIRE,
+}
+
+## The bits a pad event presses, for `PressLatch`, whichever pad it came from: a
+## button going down, or the stick pushed past the dead zone. Zero for anything
+## else — a release included.
+static func pressed_bits(event: InputEvent) -> int:
+	var button := event as InputEventJoypadButton
+	if button != null:
+		return BUTTON_BITS.get(button.button_index, 0) if button.pressed else 0
+	var motion := event as InputEventJoypadMotion
+	if motion == null:
+		return 0
+	var stick := Vector2.ZERO
+	if motion.axis == JOY_AXIS_LEFT_X:
+		stick.x = motion.axis_value
+	elif motion.axis == JOY_AXIS_LEFT_Y:
+		stick.y = motion.axis_value
+	return compose(false, false, false, false, false, stick)

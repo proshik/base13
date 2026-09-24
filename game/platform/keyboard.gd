@@ -40,6 +40,20 @@ static func bits(index: int, probe := Callable()) -> int:
 			mask |= BITS[action]
 	return mask
 
+## The bit a key going down gives this layout, for `PressLatch`: zero for a
+## release, an auto-repeat or a key the layout does not use. By physical
+## position, like `bits`.
+static func pressed_bits(event: InputEvent, index: int) -> int:
+	if index < 0 or index >= LAYOUTS.size():
+		return 0
+	var key := event as InputEventKey
+	if key == null or not key.pressed or key.echo:
+		return 0
+	for action in ["up", "down", "left", "right", "fire"]:
+		if LAYOUTS[index][action] == key.physical_keycode:
+			return BITS[action]
+	return 0
+
 const ARROWS := [KEY_UP, KEY_LEFT, KEY_DOWN, KEY_RIGHT]
 
 ## Key names for the on-screen legend. Arrows collapse into a single word, and

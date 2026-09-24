@@ -152,6 +152,7 @@ Everything that knows about hardware and disk:
 | `game/platform/level_loader.gd` | Reading `.lvl` from disk |
 | `game/platform/relay_config.gd` | Where the room server address comes from |
 | `game/platform/keyboard.gd`, `game/platform/gamepad.gd` | Sources of the same five bits |
+| `game/platform/press_latch.gd`, `game/platform/press_feed.gd` | Presses since the last tick captured, so a tap between two captures is not lost |
 | `game/platform/score_store.gd` | The high score in `user://base13.cfg` |
 | `game/platform/window_scale.gd` | Picking an integer window scale for the display |
 | `game/platform/client_info.gd` | The platform and version the client names in its hello |
@@ -358,6 +359,14 @@ Rakes we have already stepped on:
   level 2 on 2026-09-16 and after level 3 on 2026-09-22. And a side standing at the
   horizon sends its input again once a second, like one standing at the window: the
   loop used to stop there before it asked, and one lost packet did the same.
+- **Keys read by level lose a tap.** A tick takes the keys held at the moment it is
+  captured, so a press that went down and up between two captures reached no tick: a
+  frame hanging for a third of a second in the browser swallowed a tap of fire or a
+  turn, and a tick standing for the partner swallowed every tap made while it stood.
+  `PressFeed` hands the engine's key and pad events to `PressLatch` while the ticks
+  run, and the next capture takes what was pressed along with what is held — once.
+  Presses behind the STAGE caption and the pause are not noted: they would play once
+  the world moved again.
 - **A bullet and a tank walk unit by unit, so nothing invariant may be asked inside the
   walk.** Thirty-two steps a tick each re-asked where the base was, which tanks were
   about and which cells were covered — none of which changes while they walk. Settling it

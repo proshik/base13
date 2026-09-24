@@ -151,10 +151,15 @@ func capture(now: int) -> void:
 	_rollback.submit_local(applied, bits)
 	_link.send(Protocol.pack_input(applied, bits))
 
+## What is held, and a press that came and went since the last tick captured: see
+## `PressLatch`. A tick standing captures nothing, so the press waits for the next.
 func _read_bits(now: int) -> int:
+	var held: int
 	if _bits_provider.is_valid():
-		return _bits_provider.call(now)
-	return Keyboard.bits(0) | Gamepad.bits(0)
+		held = _bits_provider.call(now)
+	else:
+		held = Keyboard.bits(0) | Gamepad.bits(0)
+	return held | PressLatch.take(0)
 
 func can_predict(tick: int) -> bool:
 	if desynced:

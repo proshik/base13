@@ -52,6 +52,10 @@ func _ready() -> void:
 	# no business in the layout.
 	_stats = NetStats.new()
 	add_child(_stats)
+	# Presses are noted only while the ticks run: one made behind the STAGE
+	# caption or the pause played once the world moved again.
+	add_child(PressFeed.new(func() -> bool:
+		return (_phase == Phase.PLAY or _phase == Phase.OUTRO) and not _paused))
 
 ## The input source comes from outside: in a single-player game it stays the
 ## keyboard, in a network game it becomes the network input. The screen knows
@@ -84,6 +88,8 @@ func _begin_level() -> void:
 		_campaign.level_number, _campaign.slots.size(), _campaign.carryover())
 	_match = NetMatch.new(_sim, _input)
 	_end_tick = -1
+	# The last level's outro may have left a press behind.
+	PressLatch.clear()
 	if _networked():
 		_input.level_began(_campaign.level_number)
 	_banner.show_text("STAGE %d" % _campaign.level_number)
