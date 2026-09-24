@@ -35,8 +35,9 @@ func paceBody(p pace) []byte {
 var desyncBody = []byte(`{"desync":true}`)
 
 // seatPair opens a room by code from macos and seats a partner from web in it.
-// The host's notice that the partner arrived is already read, so the next frame
-// either of them receives is whatever the other sends.
+// The host's notice that the partner arrived is already read, and so is the
+// ping each of them is sent on seating, so the next frame either of them
+// receives is whatever the other sends — or a ping of the timer's.
 func seatPair(t *testing.T, addr string) (host, guest *wsClient, code string) {
 	t.Helper()
 	host = dial(t, addr)
@@ -47,6 +48,10 @@ func seatPair(t *testing.T, addr string) (host, guest *wsClient, code string) {
 	if answer := guest.welcome(t); !answer.OK {
 		t.Fatalf("the guest was refused: %+v", answer)
 	}
+	if opcode, _ := guest.receiveFrame(t); opcode != opPing {
+		t.Fatalf("the guest's first frame after the welcome is kind %d, expected the seating ping", opcode)
+	}
+	// Past the host's own seating ping, which receiveText skips.
 	host.receiveText(t)
 	return host, guest, code
 }

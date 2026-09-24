@@ -354,15 +354,17 @@ Rakes we have already stepped on:
   events above, a desync with its tick, and each tab going out of sight or window losing
   focus, and writes each as a line `room X, slot N client: …` beside its window line;
   the join line names the release, the platform and, in a browser, its family and system —
-  never the user agent. So a complaint is read from one log by the room's code. Nothing is
-  logged as a stranger wrote it: figures are whole numbers clamped to their bounds, words
-  come from the server's closed sets, and a rejected message is a count, not a line. The
-  game's name in the join line was the exception, and a line break in it wrote a line of
-  its own that read like the server's; it is logged only as a plain word now, else
-  `other`. The
-  server calls a level a stage — it knows no game. A server from 0.6.5 or before reads
-  each of these shapes as malformed, so a client sends it the older ones. About forty-eight lines a
-  minute a room in play, twice the window lines alone.
+  never the user agent. So a complaint is read from one log by the room's code. The server
+  calls a level a stage — it knows no game. Nothing is logged as a stranger wrote it:
+  figures are whole numbers clamped to their bounds, words come from the server's closed
+  sets, and a rejected message is a count, not a line. One word is not from a closed set:
+  the game's name in the join line. Written as it came, a line break in it wrote a line of
+  its own that read like the server's, so it is logged only when it is a plain word —
+  `[a-z0-9_]`, up to 32 — and as `other` otherwise. A plain word is still the client's own:
+  `game slot_0_tab_hidden` is what a stranger chose to write there, not something the
+  server checked. A server from 0.6.5 or before reads each of these shapes as malformed,
+  so a client sends it the older ones. About forty-eight lines a minute a room in play,
+  twice the window lines alone.
 - **A hidden tab has no next frame.** An engine notification about the tab reaches the
   game on its next frame, and a hidden tab gets none until it is shown: "hidden" would
   reach the server together with "visible". In a browser `Presence` listens to the

@@ -1020,6 +1020,11 @@ func TestServerPingsAWaitingClient(t *testing.T) {
 	waiting := dial(t, addr)
 	waiting.sendJSON(t, hello{Action: "quick", Game: "tanks", Seed: 1})
 	waiting.welcome(t)
+	// The first ping goes out on seating, whatever the timer does; only a ping
+	// after it shows the server goes on speaking to a player left waiting.
+	if opcode, _ := waiting.receiveFrame(t); opcode != opPing {
+		t.Fatalf("the first frame after the welcome is kind %d, expected the seating ping", opcode)
+	}
 	for step := 0; step < 8; step++ {
 		if opcode, _ := waiting.receiveFrame(t); opcode == opPing {
 			return
