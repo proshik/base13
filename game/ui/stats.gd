@@ -22,6 +22,12 @@ var _left := false
 var _revealed := 0
 var _reveal_timer := 0.0
 var _tick: AudioStreamPlayer = null
+## False in a network game: the tally is waited out. Each side shows its own, and
+## a key swept away only the side's that pressed it: that side began the next
+## level up to five and a half seconds before its partner and stood frozen on its
+## twelfth tick until they came — levels 3, 4 and 5 on 2026-09-24. Waited out on
+## both sides, the two begin together.
+var skippable := true
 
 func _ready() -> void:
 	texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
@@ -60,7 +66,7 @@ func _total_rows() -> int:
 	return _campaign.slots.size() * KINDS.size() if _campaign != null else 0
 
 func _unhandled_input(event: InputEvent) -> void:
-	if SkipInput.is_skip(event):
+	if skippable and SkipInput.is_skip(event):
 		_leave()
 
 func _leave() -> void:

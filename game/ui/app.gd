@@ -131,6 +131,8 @@ func _show(screen: int, skipped := 0) -> void:
 	add_child(_current)
 	if screen == ScreenFlow.Screen.GAME and _link != null:
 		_current.use_input(NetInput.new(_link, _local_index))
+	if screen == ScreenFlow.Screen.STATS:
+		_current.skippable = _link == null
 	if screen == ScreenFlow.Screen.DESYNC:
 		_current.show_tick(_desync_tick)
 	if _current.has_method("configure"):
