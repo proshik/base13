@@ -154,12 +154,13 @@ func test_a_stick_held_in_from_another_screen_is_not_a_press() -> void:
 	assert_eq(PressLatch.take(0), 0)
 
 func test_a_new_level_forgets_where_the_stick_stood() -> void:
-	# Left pushed at the end of the last level; this one cannot know it was let go.
+	# The last level saw the stick at the centre; it was pushed and held through
+	# the stats, where no game screen saw it. Its first event here is the way
+	# back, and read against the old centre it was a press.
 	PressLatch.note(_stick(JOY_AXIS_LEFT_X, 0.0, 16), true, [16])
-	PressLatch.note(_stick(JOY_AXIS_LEFT_X, -1.0, 16), true, [16])
 	PressLatch.clear()
 	PressLatch.note(_stick(JOY_AXIS_LEFT_X, -0.9, 16), true, [16])
-	assert_eq(PressLatch.take(0), 0, "a stick carried over read as pushed again")
+	assert_eq(PressLatch.take(0), 0, "the last level's centre made the way back a press")
 	PressLatch.note(_stick(JOY_AXIS_LEFT_X, 0.0, 16), true, [16])
 	PressLatch.note(_stick(JOY_AXIS_LEFT_X, -0.9, 16), true, [16])
 	assert_eq(PressLatch.take(0), Types.IN_LEFT, "once seen, the stick is followed again")
