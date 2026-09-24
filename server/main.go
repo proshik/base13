@@ -578,7 +578,7 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 		member.heard(now)
 		// Held open while what ended the worst gap is still coming in, for
 		// mostHeldOpen at the longest.
-		if flow.closes(now.Sub(window) - every) {
+		if flow.closes(now, now.Sub(window)-every) {
 			// A partner quiet for longer than a window while this side sends is
 			// who this side is waiting for; their own line never comes, since a
 			// line is written only on a packet.

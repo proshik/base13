@@ -831,7 +831,7 @@ func TestRisingGapsDoNotHoldAWindowOpen(t *testing.T) {
 		gap += time.Microsecond
 		flow.note(at)
 		// The window's time was up with the first packet.
-		closed = flow.closes(at.Sub(base) - 20*time.Millisecond)
+		closed = flow.closes(at, at.Sub(base)-20*time.Millisecond)
 	}
 	if !closed {
 		t.Fatal("a thousand packets, each gap longer than the last, held the window open")
@@ -841,8 +841,35 @@ func TestRisingGapsDoNotHoldAWindowOpen(t *testing.T) {
 	}
 	var early arrivals
 	early.note(base)
-	if early.closes(-time.Millisecond) {
+	if early.closes(base, -time.Millisecond) {
 		t.Fatal("a window closed before its time")
+	}
+}
+
+func TestAStallEndingLongPastTheWindowsTimeKeepsItsBurst(t *testing.T) {
+	// A window closes on a packet, so a stall across its end closes it on the
+	// stall's last packet, however late that is. The burst is waited for from
+	// there, not from the window's time: counted from there, a stall ending
+	// 300 ms late closed the window on its first packet and read `then 1 at once`.
+	base := time.Unix(0, 0)
+	every := 5 * time.Second
+	var flow arrivals
+	flow.note(base.Add(4900 * time.Millisecond))
+	end := base.Add(5300 * time.Millisecond) // a 400 ms stall, 300 ms past the time
+	for i := 0; i < 13; i++ {
+		at := end.Add(time.Duration(i) * 100 * time.Microsecond)
+		flow.note(at)
+		if flow.closes(at, at.Sub(base)-every) {
+			t.Fatalf("the window closed on packet %d of the burst that ended the stall", i+1)
+		}
+	}
+	after := end.Add(17 * time.Millisecond)
+	flow.note(after)
+	if !flow.closes(after, after.Sub(base)-every) {
+		t.Fatal("the burst is in, yet the window stays open")
+	}
+	if got := flow.atOnce(); got != 13 {
+		t.Fatalf("the stall's burst came out as %d at once, expected 13", got)
 	}
 }
 
