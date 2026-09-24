@@ -56,8 +56,8 @@ Now every message, journal, room and connection has a ceiling, every read and wr
 deadline, the server pings on its own, and the engine travels gzipped: 9.6 MB instead of
 37.7 on the first visit.
 
-The current release is `0.6.5`, published on 2026-09-24: the image
-`ghcr.io/proshik/base13:0.6.5` (also `latest`) and the desktop builds under the `v0.6.5`
+The current release is `0.6.6`, published on 2026-09-24: the image
+`ghcr.io/proshik/base13:0.6.6` (also `latest`) and the desktop builds under the `v0.6.6`
 GitHub release. The `0.6` line carries the rollback — network play no longer waits for the
 partner — and the core it needed, a simulation tick three and a half times cheaper; a
 server whose delay histogram has a bound at two, so it tells a client that steps back from
@@ -73,7 +73,11 @@ between two captured ticks is latched rather than lost in a hung frame or a stan
 tally between levels in a network game is waited out on both sides, where a key on one
 side started its next level seconds early; the pace rule weighs the least of its last
 three lead readings; and the `[net]` line names the longest frame, the server's window
-line what came at once after the worst gap.
+line what came at once after the worst gap; and since `0.6.6`, a client that hears
+`notes: true` puts its own view into the server's log — every figure of its `[net]` line,
+its level events, a hidden tab and a lost focus — the join line names the release, the
+platform and the browser, the window line carries the last round trip from the first ping
+on seating, and nothing a stranger writes reaches the log as written.
 Earlier `0.6` releases are superseded.
 The image is built for amd64 only; on an arm64 Mac run it with `--platform linux/amd64`.
 The package is public and pulls without a login. What is left of the deployment plan is a
