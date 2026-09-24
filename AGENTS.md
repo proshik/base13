@@ -365,8 +365,10 @@ Rakes we have already stepped on:
   turn, and a tick standing for the partner swallowed every tap made while it stood.
   `PressFeed` hands the engine's key and pad events to `PressLatch` while the ticks
   run, and the next capture takes what was pressed along with what is held — once.
-  Presses behind the STAGE caption and the pause are not noted: they would play once
-  the world moved again.
+  Presses behind the STAGE caption, the pause or WAITING FOR PARTNER are not noted:
+  they would play once the world moved again. A stick is pressed only as it leaves the
+  dead zone — on its way back to the centre it still reads -0.7, and taken as a press
+  that drove the tank a tick after it was let go.
 - **A bullet and a tank walk unit by unit, so nothing invariant may be asked inside the
   walk.** Thirty-two steps a tick each re-asked where the base was, which tanks were
   about and which cells were covered — none of which changes while they walk. Settling it
