@@ -162,7 +162,8 @@ Everything that knows about hardware and disk:
 | `game/platform/press_latch.gd`, `game/platform/press_feed.gd` | Presses since the last tick captured, so a tap between two captures is not lost |
 | `game/platform/score_store.gd` | The high score in `user://base13.cfg` |
 | `game/platform/window_scale.gd` | Picking an integer window scale for the display |
-| `game/platform/client_info.gd` | The platform and version the client names in its hello |
+| `game/platform/client_info.gd` | The platform and version the client names in its hello, and in a browser its family and system |
+| `game/platform/presence.gd` | A tab going out of sight and a window losing focus, as one word each |
 
 The network — the general shape of a link and its two incarnations:
 
@@ -178,7 +179,9 @@ The network — the general shape of a link and its two incarnations:
 | `game/net/net_input.gd` | The input source for a network match: the wire, resends, pace, reports |
 | `server/*.go` | The server: WebSocket by hand, rooms, matchmaking, journal, game hosting; outside code only for metrics: Prometheus's `client_golang` and what it brings |
 | `server/metrics.go` | Metric families over closed label sets, recording, and the collector that reads rooms and connections at scrape time |
-| `server/report.go` | Players' pace and desync reports: parsing, clamping, the allowance, the verdict |
+| `server/report.go` | Players' pace and desync reports: parsing, clamping, the allowance, the verdict, the log line |
+| `server/notes.go` | Players' events for the log: a closed set of words and the whole numbers each takes |
+| `server/client.go` | Who sat down, for the join line: release, platform, a browser's family and system |
 | `deploy/` | Prometheus scrape and alert rules, a Grafana Alloy example, the Grafana dashboard |
 | `Dockerfile`, `tools/image.sh` | The deployment image and the command that builds it |
 | `justfile` | An index of tasks on top of `tools/`; without it the scripts work as before |
@@ -342,8 +345,28 @@ Rakes we have already stepped on:
   Beside it, one `[net]` line an event: a level begins (with the slot), ends (the end
   tick, the tick it ended in, the confirmed tick it was seen at — both sides must agree on
   the first two), is done; and the first time a stand sends input again, with why. On the
-  server, the window line of a side still sending names a partner silent past a window,
-  and a side leaving says how long it had been silent.
+  server, the window line of a side still sending names a partner silent past a window
+  and the last round trip, and a side leaving says how long it had been silent.
+- **A console nobody kept is no evidence.** On 2026-09-24 the `[net]` lines of one side
+  survived only because its tab stayed open, and the other side's were never seen. A
+  server whose welcome says `notes: true` now hears every figure of the `[net]` line, the
+  events above, a desync with its tick, and each tab going out of sight or window losing
+  focus, and writes each as a line `room X, slot N client: …` beside its window line;
+  the join line names the release, the platform and, in a browser, its family and system —
+  never the user agent. So a complaint is read from one log by the room's code. Nothing is
+  logged as a stranger wrote it: figures are whole numbers clamped to their bounds, words
+  come from the server's closed sets, and a rejected message is a count, not a line. The
+  server calls a level a stage — it knows no game. A 0.6.4 server reads each of these
+  shapes as malformed, so a client sends it the older ones. About forty-eight lines a
+  minute a room in play, twice the window lines alone.
+- **A hidden tab has no next frame.** An engine notification about the tab reaches the
+  game on its next frame, and a hidden tab gets none until it is shown: "hidden" would
+  reach the server together with "visible". In a browser `Presence` listens to the
+  page's own `visibilitychange`, `blur` and `focus`, whose callbacks run at once, and the
+  note is on the socket before the loop stops. Checking it locally: two players in one
+  headless Chrome are not a pair — the tab in the background is hidden and stands — so
+  each player needs a browser of its own, and a second tab opened in one of them hides
+  the game the way a person switching tabs does.
 - **A gap in a player's stream does not say whose fault it is.** On 2026-09-24 one side's
   stream stood 100–460 ms nearly every window at a normal packet count, and the log could
   not tell a machine standing still from a network holding packets: both send the same

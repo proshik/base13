@@ -583,9 +583,9 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 		}
 		now := time.Now()
 		// Text after the hello is the player's own side reporting on its game.
-		// It goes to the counts and stops there: never to the partner, never
-		// into the journal, and not into the measures of the game's stream
-		// below, which a report is no part of.
+		// It goes to the counts and the log and stops there: never to the
+		// partner, never into the journal, and not into the measures of the
+		// game's stream below, which a report is no part of.
 		if text {
 			s.takeReport(&reports, member, room, packet, now)
 			continue
