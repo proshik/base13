@@ -52,23 +52,37 @@ func seatPair(t *testing.T, addr string) (host, guest *wsClient, code string) {
 }
 
 // expectPacket checks that a client's very next frame is exactly this game
-// packet, with nothing ahead of it.
+// packet, with nothing ahead of it but the server's own pings: one goes out as
+// soon as a player is seated, and it is not what these tests wait on.
 func expectPacket(t *testing.T, c *wsClient, want []byte) {
 	t.Helper()
 	opcode, got := c.receiveFrame(t)
+	for opcode == opPing {
+		opcode, got = c.receiveFrame(t)
+	}
 	if opcode != opBinary || !bytes.Equal(got, want) {
 		t.Fatalf("the next frame was kind %d carrying %q, expected the game packet %v", opcode, got, want)
 	}
 }
 
-// expectQuiet checks that nothing arrives for a client within a short wait.
+// expectQuiet checks that nothing but the server's own pings arrives for a
+// client within a short wait.
 func expectQuiet(t *testing.T, c *wsClient, why string) {
 	t.Helper()
-	c.conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
-	if _, err := c.reader.ReadByte(); err == nil {
-		t.Fatalf("%s: a frame arrived", why)
-	} else if !errors.Is(err, os.ErrDeadlineExceeded) {
-		t.Fatalf("%s: the socket failed instead of staying quiet: %v", why, err)
+	until := time.Now().Add(300 * time.Millisecond)
+	for {
+		c.conn.SetReadDeadline(until)
+		first, err := c.reader.Peek(1)
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			return
+		}
+		if err != nil {
+			t.Fatalf("%s: the socket failed instead of staying quiet: %v", why, err)
+		}
+		if first[0]&0x0F != opPing {
+			t.Fatalf("%s: a frame arrived", why)
+		}
+		c.receiveFrame(t)
 	}
 }
 
@@ -694,12 +708,13 @@ func TestTheLogNamesASilentPartner(t *testing.T) {
 	s := &server{hub: NewHub(), statsEvery: 50 * time.Millisecond}
 	addr, stop := serve(t, s)
 	defer stop()
-	host, guest, _ := seatPair(t, addr)
+	host, guest, code := seatPair(t, addr)
 	packet := []byte{1, 0, 0, 0, 0, 31}
 	host.send(t, packet)
 	expectPacket(t, guest, packet)
 	// The guest sends on past the host's last packet for a few windows.
-	for deadline := time.Now().Add(2 * time.Second); !strings.Contains(captured.String(), "slot 0 silent"); {
+	named := regexp.MustCompile(`room ` + code + `, slot 1: [^\n]*slot 0 silent`)
+	for deadline := time.Now().Add(2 * time.Second); !named.MatchString(captured.String()); {
 		if time.Now().After(deadline) {
 			t.Fatalf("no window line named the silent host: %q", captured.String())
 		}
@@ -708,8 +723,10 @@ func TestTheLogNamesASilentPartner(t *testing.T) {
 		expectPacket(t, host, packet)
 	}
 	host.conn.Close()
-	eventually(t, func() bool { return strings.Contains(captured.String(), "left") })
-	if !regexp.MustCompile(`player 1 left, 1 remain, journal \d+ records, silent \d+m?s before`).MatchString(captured.String()) {
+	// This room's line, not just any: a test before this one may still be
+	// letting its players go, and its lines land here too.
+	eventually(t, func() bool { return strings.Contains(captured.String(), "room "+code+": player 1 left") })
+	if !regexp.MustCompile(`room ` + code + `: player 1 left, 1 remain, journal \d+ records, silent \d+m?s before`).MatchString(captured.String()) {
 		t.Fatalf("the host leaving did not say how long they had been silent: %q", captured.String())
 	}
 }
@@ -729,7 +746,7 @@ func TestTheWindowLineSaysWhatCameAtOnceAfterTheWorstGap(t *testing.T) {
 	s := &server{hub: NewHub(), statsEvery: 50 * time.Millisecond}
 	addr, stop := serve(t, s)
 	defer stop()
-	host, guest, _ := seatPair(t, addr)
+	host, guest, code := seatPair(t, addr)
 	packet := []byte{1, 0, 0, 0, 0, 31}
 	host.send(t, packet)
 	expectPacket(t, guest, packet)
@@ -748,8 +765,8 @@ func TestTheWindowLineSaysWhatCameAtOnceAfterTheWorstGap(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 	host.send(t, packet)
 	expectPacket(t, guest, packet)
-	eventually(t, func() bool { return strings.Contains(captured.String(), "slot 0: ") })
-	if !regexp.MustCompile(`slot 0: \d+s, 1[01] packets, worst gap \d+ms, then 9 at once`).MatchString(captured.String()) {
+	eventually(t, func() bool { return strings.Contains(captured.String(), "room "+code+", slot 0: ") })
+	if !regexp.MustCompile(`room ` + code + `, slot 0: \d+s, 1[01] packets, worst gap \d+ms, then 9 at once`).MatchString(captured.String()) {
 		t.Fatalf("the window line does not say what came at once after the worst gap: %q", captured.String())
 	}
 }

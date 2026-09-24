@@ -346,7 +346,8 @@ Rakes we have already stepped on:
   tick, the tick it ended in, the confirmed tick it was seen at — both sides must agree on
   the first two), is done; and the first time a stand sends input again, with why. On the
   server, the window line of a side still sending names a partner silent past a window
-  and the last round trip, and a side leaving says how long it had been silent.
+  and the last round trip — the first ping goes out as a player sits down, not twenty
+  seconds later — and a side leaving says how long it had been silent.
 - **A console nobody kept is no evidence.** On 2026-09-24 the `[net]` lines of one side
   survived only because its tab stayed open, and the other side's were never seen. A
   server whose welcome says `notes: true` now hears every figure of the `[net]` line, the
@@ -356,6 +357,9 @@ Rakes we have already stepped on:
   never the user agent. So a complaint is read from one log by the room's code. Nothing is
   logged as a stranger wrote it: figures are whole numbers clamped to their bounds, words
   come from the server's closed sets, and a rejected message is a count, not a line. The
+  game's name in the join line was the exception, and a line break in it wrote a line of
+  its own that read like the server's; it is logged only as a plain word now, else
+  `other`. The
   server calls a level a stage — it knows no game. A server from 0.6.5 or before reads
   each of these shapes as malformed, so a client sends it the older ones. About forty-eight lines a
   minute a room in play, twice the window lines alone.

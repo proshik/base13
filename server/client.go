@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 )
@@ -35,4 +36,21 @@ func (c client) describe(browser, os string) string {
 		return who
 	}
 	return fmt.Sprintf("%s (%s, %s)", who, familyLabel(browser, browsers), familyLabel(os, systems))
+}
+
+// A game's name as the log may say it: a plain word, as every real client
+// sends. The name is a stranger's, and written into a line as it came, a line
+// break in it starts a line of its own — one that reads like the server's word
+// about some other room. Quoting it would stop that and still leave hundreds of
+// bytes of the stranger's text, lookalike words included, in every join line.
+var plainWord = regexp.MustCompile(`^[a-z0-9_]{1,32}$`)
+
+// gameLabel folds a game's name for the log: kept when it is a plain word, and
+// other when it is anything else. The room keeps the name as it was sent; only
+// the log folds it.
+func gameLabel(sent string) string {
+	if plainWord.MatchString(sent) {
+		return sent
+	}
+	return "other"
 }

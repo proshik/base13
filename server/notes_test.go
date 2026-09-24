@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"log"
+	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -174,7 +176,7 @@ func TestEachTakenReportIsOneLineOfTheLog(t *testing.T) {
 		return metricValue(t, s, `relay_client_reports_rejected_total{why="early"}`) == 1 &&
 			metricValue(t, s, `relay_client_reports_rejected_total{why="malformed"}`) == 1
 	})
-	if got := strings.Count(captured.String(), "slot 0 client: speed"); got != 2 {
+	if got := strings.Count(captured.String(), "room "+code+", slot 0 client: speed"); got != 2 {
 		t.Errorf("%d lines for the host's reports, expected the two taken:\n%s", got, captured.String())
 	}
 	// The current shape counts in the families exactly as the older one does.
@@ -360,18 +362,18 @@ func TestTheJoinLineSaysWhoCame(t *testing.T) {
 	guest.sendJSON(t, hello{Action: "join", Game: "tanks", Code: code, Platform: "web", Version: "Mozilla/5.0 (X11)",
 		Browser: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit", OS: strings.Repeat("x", 300)})
 	guest.welcome(t)
-	waitForLine(t, captured, `player 2 joined, 2 in room, client other web \(other, other\)\n`)
+	waitForLine(t, captured, `room `+code+` \(private, game tanks\): player 2 joined, 2 in room, client other web \(other, other\)\n`)
 	host.receiveText(t)
 
 	// A desktop names no browser; an older client names nothing at all.
 	host.send(t, []byte{1, 0, 0, 0, 0, 31})
 	guest.receive(t)
 	guest.conn.Close()
-	eventually(t, func() bool { return strings.Contains(captured.String(), "player 2 left") })
+	eventually(t, func() bool { return strings.Contains(captured.String(), "room "+code+": player 2 left") })
 	back := dial(t, addr)
 	back.sendJSON(t, hello{Action: "join", Game: "tanks", Code: code, Since: 1})
 	back.welcome(t)
-	waitForLine(t, captured, `player 2 returned, sending 0 records, 2 in room, client unknown unknown\n`)
+	waitForLine(t, captured, `room `+code+` \(private\): player 2 returned, sending 0 records, 2 in room, client unknown unknown\n`)
 
 	for _, c := range []struct{ platform, version, browser, os, want string }{
 		{"macos", "0.6.5", "", "", "0.6.5 macos"},
@@ -425,5 +427,109 @@ func TestTheWindowLineSaysTheLastRoundTrip(t *testing.T) {
 	}
 	if regexp.MustCompile(`slot 0: [^\n]*rtt`).MatchString(captured.String()) {
 		t.Errorf("a side that never answered a ping was given a round trip:\n%s", captured.String())
+	}
+}
+
+func TestNothingAStrangerWritesStartsALineOfItsOwn(t *testing.T) {
+	// The log is where a complaint is read now, so a line in it has to be the
+	// server's. A hello is a stranger's, and a line break inside any of its
+	// fields, written into a line as it came, would start a line of its own —
+	// one reading like the server's word about some other room. Every field a
+	// hello carries goes through here with a line break, a carriage return and
+	// control bytes in it, in every action that logs.
+	captured := captureLog(t)
+	s := &server{hub: NewHub()}
+	addr, stop := serve(t, s)
+	defer stop()
+	const forged = "x\n2026/09/25 00:00:00 room FORGED, slot 0 client: tab hidden\r\x00\x1b[31m"
+
+	seat := func(h hello) {
+		t.Helper()
+		c := dial(t, addr)
+		c.sendJSON(t, h)
+		c.receiveText(t)
+	}
+	seat(hello{Action: "create", Game: forged, Seed: 1})
+	seat(hello{Action: "quick", Game: forged, Seed: 1})
+	seat(hello{Action: "create", Game: "tanks", Seed: 1, Platform: forged, Version: forged, Browser: forged, OS: forged})
+	seat(hello{Action: "create", Game: "tanks", Seed: 1, Platform: "web", Version: forged, Browser: forged, OS: forged})
+	seat(hello{Action: forged, Game: "tanks", Seed: 1})
+	seat(hello{Action: "join", Game: "tanks", Code: forged})
+	seat(hello{Action: "join", Game: forged, Code: "ABCDEF"})
+
+	// A room with a forged game name, and a partner joining it.
+	host := dial(t, addr)
+	host.sendJSON(t, hello{Action: "create", Game: forged, Seed: 1})
+	code := host.welcome(t).Code
+	guest := dial(t, addr)
+	guest.sendJSON(t, hello{Action: "join", Game: forged, Code: code, Platform: forged})
+	guest.welcome(t)
+
+	waitForLine(t, captured, `room `+code+` \(private, game other\): player 2 joined`)
+	logged := captured.String()
+	if strings.Contains(logged, "FORGED") || strings.ContainsAny(logged, "\r\x00\x1b") {
+		t.Errorf("a stranger's field reached the log as it was written:\n%q", logged)
+	}
+	stamp := regexp.MustCompile(`^\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2} `)
+	for _, line := range strings.Split(strings.TrimSuffix(logged, "\n"), "\n") {
+		if !stamp.MatchString(line) {
+			t.Errorf("a line the logger did not start: %q", line)
+		}
+	}
+}
+
+func TestAGameNameIsLoggedOnlyAsAPlainWord(t *testing.T) {
+	// Short lowercase words, digits and underscores, which is every name a
+	// real client sends; anything else is other. The room itself keeps the name
+	// as it was sent — only the log folds it.
+	for _, c := range []struct{ sent, want string }{
+		{"tanks", "tanks"},
+		{"game_2", "game_2"},
+		{strings.Repeat("a", 32), strings.Repeat("a", 32)},
+		{strings.Repeat("a", 33), "other"},
+		{"Tanks", "other"},
+		{"tanks\nroom", "other"},
+		{"tänks", "other"},
+		{"", "other"},
+	} {
+		if got := gameLabel(c.sent); got != c.want {
+			t.Errorf("game %q logged as %q, expected %q", c.sent, got, c.want)
+		}
+	}
+}
+
+func TestTheFirstPingGoesOutOnceSeated(t *testing.T) {
+	// A round trip is measured only on a ping, and pings go every twenty
+	// seconds, so the first twenty seconds of every game had none: exactly the
+	// start a complaint is often about. The first ping goes out as soon as the
+	// player is seated, and after it every interval as before.
+	s := &server{hub: NewHub(), statsEvery: 50 * time.Millisecond}
+	addr, stop := serve(t, s)
+	defer stop()
+	captured := captureLog(t)
+	host := dial(t, addr)
+	host.sendJSON(t, hello{Action: "create", Game: "tanks", Seed: 1})
+	code := host.welcome(t).Code
+	host.conn.SetReadDeadline(time.Now().Add(time.Second))
+	opcode, payload := host.receiveFrame(t)
+	if opcode != opPing {
+		t.Fatalf("the first frame after the welcome is kind %d, expected a ping", opcode)
+	}
+	host.conn.Write(clientFrame(opPong, payload))
+
+	// With the default interval nothing more comes for a good while, and the
+	// very first window line already has a round trip to say.
+	packet := []byte{1, 0, 0, 0, 0, 31}
+	for deadline := time.Now().Add(2 * time.Second); !strings.Contains(captured.String(), "room "+code+", slot 0: "); {
+		if time.Now().After(deadline) {
+			t.Fatalf("no window line:\n%s", captured.String())
+		}
+		host.send(t, packet)
+		time.Sleep(20 * time.Millisecond)
+	}
+	waitForLine(t, captured, `room `+code+`, slot 0: [^\n]*, rtt \d+(\.\d+)?[mµn]?s\n`)
+	host.conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+	if _, err := host.reader.ReadByte(); !errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("a second frame came long before the ping interval: %v", err)
 	}
 }

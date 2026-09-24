@@ -473,7 +473,15 @@ func (s *server) reportInterval() time.Duration {
 // pump carries a member's queue into the socket and pings on a timer. Sending
 // runs in its own goroutine: a slow member must not hold up those who read on
 // time.
+//
+// The first ping goes out at once, as the player sits down: a round trip is
+// measured only on a ping, and on the timer alone the first twenty seconds of
+// every game — the start a complaint is often about — had none.
 func pump(conn *Conn, member *Member, every time.Duration) {
+	if err := conn.Ping(); err != nil {
+		conn.Close()
+		return
+	}
 	ping := time.NewTicker(every)
 	defer ping.Stop()
 	for {
@@ -712,7 +720,7 @@ func (s *server) greet(conn *Conn, r *http.Request) (*Room, *Member, error) {
 			room.Code, kind, slotName(member.Slot), len(tail), room.Occupants(), came)
 	} else {
 		log.Printf("room %s (%s, game %s): %s joined, %d in room, client %s",
-			room.Code, kind, request.Game, slotName(member.Slot), room.Occupants(), came)
+			room.Code, kind, gameLabel(request.Game), slotName(member.Slot), room.Occupants(), came)
 	}
 
 	answer := welcome{

@@ -1121,6 +1121,18 @@ func TestRTTIsLabelledByPlatform(t *testing.T) {
 	checkExposition(t, renderMetrics(s))
 }
 
+// readPing reads the ping pump sends as it starts, off the client's end of a
+// pipe: the pipe takes a write only when it is read.
+func readPing(t *testing.T, client net.Conn) {
+	t.Helper()
+	client.SetReadDeadline(time.Now().Add(time.Second))
+	frame := make([]byte, 2+8)
+	if _, err := io.ReadFull(client, frame); err != nil || frame[0]&0x0F != opPing {
+		t.Fatalf("the first frame on seating was not a ping: % x (%v)", frame, err)
+	}
+	client.SetReadDeadline(time.Time{})
+}
+
 func TestAMemberCutOffForFallingBehindIsDisconnected(t *testing.T) {
 	// The room drops a member whose queue overflowed. Unless the socket goes
 	// too, they sit on a connection that will never carry anything again and
@@ -1129,6 +1141,9 @@ func TestAMemberCutOffForFallingBehindIsDisconnected(t *testing.T) {
 	member := &Member{Slot: 0, Send: make(chan outgoing, 1)}
 	done := make(chan struct{})
 	go func() { pump(conn, member, time.Hour); close(done) }()
+	// The pipe takes a write only when it is read: the ping that goes out on
+	// seating is read first.
+	readPing(t, client)
 	close(member.Send)
 	select {
 	case <-done:
@@ -1858,6 +1873,7 @@ func TestForwardDelayIsObservedAfterTheWrite(t *testing.T) {
 	partner, conn := pipeConn(t)
 	done := make(chan struct{})
 	go func() { pump(conn, guest, time.Hour); close(done) }()
+	readPing(t, partner)
 	expectSeries(t, s, map[string]float64{"relay_forward_seconds_count": 0})
 
 	packet := []byte{1, 0, 0, 0, 0, 31}
