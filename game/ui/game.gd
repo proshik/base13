@@ -53,8 +53,8 @@ func _ready() -> void:
 	_stats = NetStats.new()
 	add_child(_stats)
 	# Presses are noted only while the ticks run: one made behind the STAGE
-	# caption, the pause or WAITING FOR PARTNER played once the world moved
-	# again. A stand too short for a caption keeps them.
+	# caption, the pause, WAITING FOR PARTNER or RECONNECTING played once the
+	# world moved again. A stand too short for a caption keeps them.
 	add_child(PressFeed.new(func() -> bool:
 		return (_phase == Phase.PLAY or _phase == Phase.OUTRO) and not _paused \
 			and _status == ""))
@@ -253,6 +253,9 @@ func _show_status(text: String) -> void:
 	if text != "":
 		# A continuous hum over a stopped game sounds like a hang of its own.
 		_audio.set_engine("")
+		# What was pressed in the second before the caption belongs to the stand
+		# as much as what comes behind it, and the stand may last half a minute.
+		PressLatch.clear()
 		_banner.show_text(text)
 		return
 	# The time spent waiting is not reset here: the pump forgets a long stand by

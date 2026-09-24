@@ -15,8 +15,12 @@ class_name PressLatch
 
 static var _seen: Array[int] = [0, 0]
 ## Where each pad's axes last stood, by `Vector2i(device, axis)`: a stick counts as
-## pressed only when it crosses out of the dead zone. Not forgotten by `clear`,
-## since it is where the stick is, not something pressed.
+## pressed only when it crosses out of the dead zone. Only a game screen sees the
+## events, so a new one cannot know where a stick carried in from the menu stands;
+## an axis not seen since `clear` is taken to have stood where its first event
+## puts it. What is held is still read by level, so that loses nothing but a flick
+## whose first sample is already past the dead zone, where guessing the centre
+## drove the tank a tick after a held stick was let go.
 static var _axes := {}
 
 ## `open` false follows the stick without noting a press: a stick let go behind the
@@ -28,7 +32,7 @@ static func note(event: InputEvent, open := true, pads: Variant = null) -> void:
 	var motion := event as InputEventJoypadMotion
 	if motion != null:
 		var axis := Vector2i(motion.device, motion.axis)
-		was = _axes.get(axis, 0.0)
+		was = _axes.get(axis, motion.axis_value)
 		_axes[axis] = motion.axis_value
 	if not open:
 		return
@@ -51,3 +55,4 @@ static func take(index: int) -> int:
 
 static func clear() -> void:
 	_seen.fill(0)
+	_axes.clear()

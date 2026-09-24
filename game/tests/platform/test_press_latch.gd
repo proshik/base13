@@ -113,7 +113,7 @@ func test_a_stick_swung_across_is_a_press_the_other_way() -> void:
 func test_the_latch_takes_a_stick_let_go_as_no_press() -> void:
 	# Pushed left and let go between two captures: the push is a press, the way
 	# back is not, and the capture after the first sees nothing.
-	for value in [-0.9, -0.7, -0.55, 0.0]:
+	for value in [0.0, -0.9, -0.7, -0.55, 0.0]:
 		PressLatch.note(_stick(JOY_AXIS_LEFT_X, value, 11), true, [11])
 	assert_eq(PressLatch.take(0), Types.IN_LEFT)
 	PressLatch.note(_stick(JOY_AXIS_LEFT_X, -0.9, 11), true, [11])
@@ -123,6 +123,8 @@ func test_the_latch_takes_a_stick_let_go_as_no_press() -> void:
 	assert_eq(PressLatch.take(0), 0, "a stick springing back drove the tank on")
 
 func test_a_stick_turned_from_up_to_left_presses_left_only() -> void:
+	PressLatch.note(_stick(JOY_AXIS_LEFT_X, 0.0, 12), true, [12])
+	PressLatch.note(_stick(JOY_AXIS_LEFT_Y, 0.0, 12), true, [12])
 	PressLatch.note(_stick(JOY_AXIS_LEFT_Y, -0.9, 12), true, [12])
 	PressLatch.take(0)
 	# Up comes back towards the centre as left goes out.
@@ -135,11 +137,32 @@ func test_a_stick_turned_from_up_to_left_presses_left_only() -> void:
 func test_the_stick_is_followed_while_presses_are_not_wanted() -> void:
 	# Pushed before the pause, let go behind it, pushed again after: the last is
 	# a press, which only a latch that kept following the stick can tell.
+	PressLatch.note(_stick(JOY_AXIS_LEFT_X, 0.0, 13), true, [13])
 	PressLatch.note(_stick(JOY_AXIS_LEFT_X, -0.9, 13), true, [13])
 	PressLatch.take(0)
 	PressLatch.note(_stick(JOY_AXIS_LEFT_X, 0.0, 13), false, [13])
 	PressLatch.note(_stick(JOY_AXIS_LEFT_X, -0.9, 13), true, [13])
 	assert_eq(PressLatch.take(0), Types.IN_LEFT)
+
+func test_a_stick_held_in_from_another_screen_is_not_a_press() -> void:
+	# Held since the menu, where no game screen saw it: its first event here is the
+	# way back to the centre, and guessing the centre for where it stood made that
+	# a press.
+	PressLatch.note(_stick(JOY_AXIS_LEFT_X, -0.9, 15), true, [15])
+	PressLatch.note(_stick(JOY_AXIS_LEFT_X, -0.6, 15), true, [15])
+	PressLatch.note(_stick(JOY_AXIS_LEFT_X, 0.0, 15), true, [15])
+	assert_eq(PressLatch.take(0), 0)
+
+func test_a_new_level_forgets_where_the_stick_stood() -> void:
+	# Left pushed at the end of the last level; this one cannot know it was let go.
+	PressLatch.note(_stick(JOY_AXIS_LEFT_X, 0.0, 16), true, [16])
+	PressLatch.note(_stick(JOY_AXIS_LEFT_X, -1.0, 16), true, [16])
+	PressLatch.clear()
+	PressLatch.note(_stick(JOY_AXIS_LEFT_X, -0.9, 16), true, [16])
+	assert_eq(PressLatch.take(0), 0, "a stick carried over read as pushed again")
+	PressLatch.note(_stick(JOY_AXIS_LEFT_X, 0.0, 16), true, [16])
+	PressLatch.note(_stick(JOY_AXIS_LEFT_X, -0.9, 16), true, [16])
+	assert_eq(PressLatch.take(0), Types.IN_LEFT, "once seen, the stick is followed again")
 
 func test_a_press_while_not_wanted_is_not_noted() -> void:
 	PressLatch.note(_key(KEY_SPACE), false)

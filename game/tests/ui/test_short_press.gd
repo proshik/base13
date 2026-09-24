@@ -122,6 +122,19 @@ func test_a_tap_behind_a_network_caption_is_not_played_after_it() -> void:
 	assert_eq(screen._sim.get_state().bullets.size(), before,
 		"a press made behind WAITING FOR PARTNER fired once the world moved")
 
+func test_a_tap_just_before_a_network_caption_is_not_played_after_it() -> void:
+	# A stand captures nothing, so a press made in the second before the caption
+	# went up would wait out the whole stand — half a minute, at worst.
+	screen = _play()
+	_face_the_open_field(screen)
+	var before: int = screen._sim.get_state().bullets.size()
+	_tap(KEY_SPACE)
+	screen._show_status("WAITING FOR PARTNER")
+	screen._show_status("")
+	screen._process(FRAME)
+	assert_eq(screen._sim.get_state().bullets.size(), before,
+		"a press made as the stand began fired once it was over")
+
 func test_a_tap_behind_the_caption_is_not_played_after_it() -> void:
 	var node: Node = load("res://ui/game.tscn").instantiate()
 	add_child_autofree(node)
