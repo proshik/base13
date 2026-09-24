@@ -47,18 +47,24 @@ const BUTTON_BITS := {
 }
 
 ## The bits a pad event presses, for `PressLatch`, whichever pad it came from: a
-## button going down, or the stick pushed past the dead zone. Zero for anything
-## else — a release included.
-static func pressed_bits(event: InputEvent) -> int:
+## button going down, or the stick crossing out of the dead zone. Zero for
+## anything else — a release included. `was` is where this axis stood before the
+## event: a stick springing back to the centre passes -0.9, -0.7 and -0.55, all
+## past the dead zone, and taken as presses they drove the tank on a tick after
+## the stick was let go.
+static func pressed_bits(event: InputEvent, was := 0.0) -> int:
 	var button := event as InputEventJoypadButton
 	if button != null:
 		return BUTTON_BITS.get(button.button_index, 0) if button.pressed else 0
 	var motion := event as InputEventJoypadMotion
 	if motion == null:
 		return 0
+	return _axis_bits(motion.axis, motion.axis_value) & ~_axis_bits(motion.axis, was)
+
+static func _axis_bits(axis: int, value: float) -> int:
 	var stick := Vector2.ZERO
-	if motion.axis == JOY_AXIS_LEFT_X:
-		stick.x = motion.axis_value
-	elif motion.axis == JOY_AXIS_LEFT_Y:
-		stick.y = motion.axis_value
+	if axis == JOY_AXIS_LEFT_X:
+		stick.x = value
+	elif axis == JOY_AXIS_LEFT_Y:
+		stick.y = value
 	return compose(false, false, false, false, false, stick)

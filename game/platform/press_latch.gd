@@ -14,18 +14,32 @@ class_name PressLatch
 ## events.
 
 static var _seen: Array[int] = [0, 0]
+## Where each pad's axes last stood, by `Vector2i(device, axis)`: a stick counts as
+## pressed only when it crosses out of the dead zone. Not forgotten by `clear`,
+## since it is where the stick is, not something pressed.
+static var _axes := {}
 
-## `pads` is a seam for tests, the connected pads in the order `Gamepad.bits`
-## counts them: in headless there are none.
-static func note(event: InputEvent, pads: Variant = null) -> void:
+## `open` false follows the stick without noting a press: a stick let go behind the
+## pause would otherwise still read as pushed after it. `pads` is a seam for
+## tests, the connected pads in the order `Gamepad.bits` counts them: in headless
+## there are none.
+static func note(event: InputEvent, open := true, pads: Variant = null) -> void:
+	var was := 0.0
+	var motion := event as InputEventJoypadMotion
+	if motion != null:
+		var axis := Vector2i(motion.device, motion.axis)
+		was = _axes.get(axis, 0.0)
+		_axes[axis] = motion.axis_value
+	if not open:
+		return
 	for i in _seen.size():
 		_seen[i] |= Keyboard.pressed_bits(event, i)
-	if not (event is InputEventJoypadButton or event is InputEventJoypadMotion):
+	if not (event is InputEventJoypadButton or motion != null):
 		return
 	var connected: Array = Input.get_connected_joypads() if pads == null else pads
 	var i := connected.find(event.device)
 	if i >= 0 and i < _seen.size():
-		_seen[i] |= Gamepad.pressed_bits(event)
+		_seen[i] |= Gamepad.pressed_bits(event, was)
 
 ## What was pressed for this player since the last take, and forgotten here.
 static func take(index: int) -> int:

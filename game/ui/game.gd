@@ -53,9 +53,11 @@ func _ready() -> void:
 	_stats = NetStats.new()
 	add_child(_stats)
 	# Presses are noted only while the ticks run: one made behind the STAGE
-	# caption or the pause played once the world moved again.
+	# caption, the pause or WAITING FOR PARTNER played once the world moved
+	# again. A stand too short for a caption keeps them.
 	add_child(PressFeed.new(func() -> bool:
-		return (_phase == Phase.PLAY or _phase == Phase.OUTRO) and not _paused))
+		return (_phase == Phase.PLAY or _phase == Phase.OUTRO) and not _paused \
+			and _status == ""))
 
 ## The input source comes from outside: in a single-player game it stays the
 ## keyboard, in a network game it becomes the network input. The screen knows

@@ -8,10 +8,10 @@ extends Node
 
 var _open: Callable
 
-## `open` says whether presses are wanted right now.
+## `open` says whether presses are wanted right now. Every event goes through all
+## the same: the latch follows the stick even while presses are not wanted.
 func _init(open: Callable) -> void:
 	_open = open
 
 func _input(event: InputEvent) -> void:
-	if _open.call():
-		PressLatch.note(event)
+	PressLatch.note(event, _open.call())

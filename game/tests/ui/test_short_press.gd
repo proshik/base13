@@ -109,6 +109,19 @@ func test_a_tap_behind_the_pause_is_not_played_after_it() -> void:
 	assert_eq(screen._sim.get_state().bullets.size(), before,
 		"a press made while the world stood still fired once it moved")
 
+func test_a_tap_behind_a_network_caption_is_not_played_after_it() -> void:
+	# WAITING FOR PARTNER or RECONNECTING: the world stands still behind it, as
+	# behind the pause. The caption is put up by hand — alone nothing stands.
+	screen = _play()
+	_face_the_open_field(screen)
+	var before: int = screen._sim.get_state().bullets.size()
+	screen._show_status("WAITING FOR PARTNER")
+	_tap(KEY_SPACE)
+	screen._show_status("")
+	screen._process(FRAME)
+	assert_eq(screen._sim.get_state().bullets.size(), before,
+		"a press made behind WAITING FOR PARTNER fired once the world moved")
+
 func test_a_tap_behind_the_caption_is_not_played_after_it() -> void:
 	var node: Node = load("res://ui/game.tscn").instantiate()
 	add_child_autofree(node)
