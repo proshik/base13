@@ -56,8 +56,8 @@ Now every message, journal, room and connection has a ceiling, every read and wr
 deadline, the server pings on its own, and the engine travels gzipped: 9.6 MB instead of
 37.7 on the first visit.
 
-The current release is `0.6.4`, published on 2026-09-22: the image
-`ghcr.io/proshik/base13:0.6.4` (also `latest`) and the desktop builds under the `v0.6.4`
+The current release is `0.6.5`, published on 2026-09-24: the image
+`ghcr.io/proshik/base13:0.6.5` (also `latest`) and the desktop builds under the `v0.6.5`
 GitHub release. The `0.6` line carries the rollback — network play no longer waits for the
 partner — and the core it needed, a simulation tick three and a half times cheaper; a
 server whose delay histogram has a bound at two, so it tells a client that steps back from
@@ -66,7 +66,14 @@ it reports, as `0.5.0` did; and since `0.6.3`, a side that stood for its partner
 lead the stand left inside the stand, rather than dropping frames for seconds after it;
 and since `0.6.4`, both sides end a level on the same tick — counted from the tick it
 ended in, not the frame it was seen on — where before a transition could hang both, and
-the client and the server log each level's end and who is waiting for whom.
+the client and the server log each level's end and who is waiting for whom; and since
+`0.6.5`, two tanks that overlap can part and an occupied spawn point passes its turn, where
+before a player on an enemy's spawn point locked both tanks or held back the wave; a tap
+between two captured ticks is latched rather than lost in a hung frame or a stand; the
+tally between levels in a network game is waited out on both sides, where a key on one
+side started its next level seconds early; the pace rule weighs the least of its last
+three lead readings; and the `[net]` line names the longest frame, the server's window
+line what came at once after the worst gap.
 Earlier `0.6` releases are superseded.
 The image is built for amd64 only; on an arm64 Mac run it with `--platform linux/amd64`.
 The package is public and pulls without a login. What is left of the deployment plan is a
