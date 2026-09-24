@@ -816,6 +816,36 @@ func TestAStreamSentAtOnceForGoodDoesNotHoldAWindowOpen(t *testing.T) {
 	}
 }
 
+func TestRisingGapsDoNotHoldAWindowOpen(t *testing.T) {
+	// Each new worst gap starts a burst of its own. A stranger making every gap
+	// a hair longer than the last would restart it on every packet; the window
+	// is held past its time for one burst's length at most, whatever comes in.
+	base := time.Unix(0, 0)
+	var flow arrivals
+	flow.note(base)
+	at := base
+	gap := 20 * time.Millisecond
+	closed := false
+	for i := 0; i < 1000 && !closed; i++ {
+		at = at.Add(gap)
+		gap += time.Microsecond
+		flow.note(at)
+		// The window's time was up with the first packet.
+		closed = flow.closes(at.Sub(base) - 20*time.Millisecond)
+	}
+	if !closed {
+		t.Fatal("a thousand packets, each gap longer than the last, held the window open")
+	}
+	if late := at.Sub(base) - 20*time.Millisecond; late > mostHeldOpen+gap {
+		t.Fatalf("the window was held %v past its time, more than %v", late, mostHeldOpen)
+	}
+	var early arrivals
+	early.note(base)
+	if early.closes(-time.Millisecond) {
+		t.Fatal("a window closed before its time")
+	}
+}
+
 func TestServesOverTLSWhenGivenACertificate(t *testing.T) {
 	// Without HTTPS the web build does not start at all: Godot requires a
 	// secure context. So the server must be able to serve over TLS itself —

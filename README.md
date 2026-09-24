@@ -460,6 +460,11 @@ milliseconds of the gap. On one machine, with a stall of 250 ms made each way, a
 page gave `then 8 at once` and a proxy holding the bytes `then 18 at once`. That player's
 own `[net]` line answers the same through `longest frame`.
 
+One burst is neither. A side that stood a second waiting for its partner sends its recent
+input again, two dozen packets in one frame, so `worst gap 1s, then 27 at once` is a side
+that waited, not a network that held; its `[net]` log says `input sent again` at the same
+moment. The same goes for a side coming back after a drop.
+
 The `machine` share includes frozen stands. A window in which the game stood still — a
 partner's hidden tab, a relay drop and return, the player's own hidden tab — is reported like
 any other, and it reads as low speed with no waits, which is the `machine` verdict. So before

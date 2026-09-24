@@ -346,7 +346,10 @@ Rakes we have already stepped on:
   ten when the machine stood and catches up five ticks a frame (8–9 measured for 250 ms),
   a stall's worth when the network let go of what it held (16–19 for 250 ms) — and the
   `[net]` line with the `longest frame`. The window is held open until that burst is in,
-  or a stall ending right on its edge would always read as the machine's. The side whose
+  or a stall ending right on its edge would always read as the machine's — but for
+  `mostHeldOpen` at most, since each new worst gap starts a burst of its own. A gap of a
+  second or more followed by two dozen is neither cause: it is a side that stood for its
+  partner and sent its recent input again. The side whose
   own network stood also steps back deep, nine to twelve ticks: it went on guessing
   through the stall, where a machine that stood guessed nothing.
 - **The tally between levels is waited out in a network game.** Each side shows its own,

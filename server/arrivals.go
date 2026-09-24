@@ -19,6 +19,12 @@ const togetherWithin = 4 * time.Millisecond
 // window open for good.
 const mostTogether = 64
 
+// mostHeldOpen is how long past its time a window may wait for a burst: long
+// enough for mostTogether packets back to back. Every new worst gap starts a
+// burst of its own, so without it a stranger making each gap a hair longer than
+// the last would hold the window open for good.
+const mostHeldOpen = mostTogether * togetherWithin
+
 type arrivals struct {
 	packets int
 	gaps    int
@@ -61,13 +67,20 @@ func (a *arrivals) worstGap() time.Duration { return a.worst }
 // meanwhile and catches up a few ticks a frame, so a handful come at once. A
 // network that stood held what the sender went on sending and lets it all go
 // together, so a stall's worth comes at once: a dozen for two hundred
-// milliseconds.
+// milliseconds. A client that stood a second for its partner also sends its
+// recent input again in one go, so a gap that long ending in two dozen is that.
 func (a *arrivals) atOnce() int { return a.together }
 
 // settling reports whether the packets that ended the worst gap may still be
 // coming. A window is not closed on them: the count would be cut short, and a
 // stall ending right on the window's end would always read as a machine's.
 func (a *arrivals) settling() bool { return a.counting }
+
+// closes reports whether the window closes now, `late` past its time: once what
+// ended its worst gap is in, or once it has waited mostHeldOpen for it.
+func (a *arrivals) closes(late time.Duration) bool {
+	return late >= 0 && (!a.settling() || late >= mostHeldOpen)
+}
 
 // measured reports whether the window holds a gap at all. Only a window holding
 // nothing but a stream's first packet does not, and its worst gap of zero is
