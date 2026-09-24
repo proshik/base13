@@ -345,9 +345,12 @@ Rakes we have already stepped on:
   `then N at once` — the packets that came together with the end of the worst gap: under
   ten when the machine stood and catches up five ticks a frame (8–9 measured for 250 ms),
   a stall's worth when the network let go of what it held (16–19 for 250 ms) — and the
-  `[net]` line with the `longest frame`. The window is held open until that burst is in,
-  or a stall ending right on its edge would always read as the machine's — but for
-  `mostHeldOpen` at most, since each new worst gap starts a burst of its own. A gap of a
+  `[net]` line with the `longest frame`. A window whose time is up waits for that burst
+  if the packet that closed it ended its worst gap — or a stall ending past its edge would
+  always read as the machine's — but only while the burst keeps coming, `mostHeldOpen` at
+  most. The first packet that does not come with it opens the next window before it is
+  counted: it may end another stall with a burst of its own, and a wait that restarted
+  the count read `then 1 at once`. A gap of a
   second or more followed by two dozen is neither cause: it is a side that stood for its
   partner and sent its recent input again. The side whose
   own network stood also steps back deep, nine to twelve ticks: it went on guessing

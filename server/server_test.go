@@ -797,79 +797,129 @@ func TestArrivalsCountWhatCameAtOnceWithTheWorstGap(t *testing.T) {
 	}
 }
 
-func TestAStreamSentAtOnceForGoodDoesNotHoldAWindowOpen(t *testing.T) {
-	// The window closes once what ended its worst gap has come in. A stranger
-	// sending back to back without a pause must not keep it open, and with it
-	// the log line and the gap histogram, for good.
-	base := time.Unix(0, 0)
+// closedWindow is what a window line reports.
+type closedWindow struct {
+	packets int
+	worst   time.Duration
+	atOnce  int
+}
+
+// windowsOf feeds packets at the given offsets from start through take, the way
+// the read loop does, and returns every window that closed.
+func windowsOf(every time.Duration, offsets ...time.Duration) []closedWindow {
+	start := time.Unix(0, 0)
+	window := start
 	var flow arrivals
-	flow.note(base)
-	flow.note(base.Add(300 * time.Millisecond))
-	for i := 1; i <= 1000 && flow.settling(); i++ {
-		flow.note(base.Add(300*time.Millisecond + time.Duration(i)*time.Microsecond))
+	var out []closedWindow
+	for _, off := range offsets {
+		flow.take(start.Add(off), &window, every, func(time.Time) {
+			out = append(out, closedWindow{flow.count(), flow.worstGap(), flow.atOnce()})
+		})
 	}
-	if flow.settling() {
-		t.Fatalf("a thousand packets back to back kept the window open")
+	return out
+}
+
+// burst is n offsets back to back from `from`, a tenth of a millisecond apart.
+func burst(from time.Duration, n int) []time.Duration {
+	var out []time.Duration
+	for i := 0; i < n; i++ {
+		out = append(out, from+time.Duration(i)*100*time.Microsecond)
 	}
-	if got := flow.atOnce(); got > 100 {
-		t.Fatalf("the count of packets at once ran to %d", got)
+	return out
+}
+
+func ms(n float64) time.Duration { return time.Duration(n * float64(time.Millisecond)) }
+
+// steady is a stream sent every frame from `from` until past `to`.
+func steady(from, to time.Duration) []time.Duration {
+	var out []time.Duration
+	for at := from; at <= to; at += ms(17) {
+		out = append(out, at)
+	}
+	return out
+}
+
+func joined(parts ...[]time.Duration) []time.Duration {
+	var out []time.Duration
+	for _, p := range parts {
+		out = append(out, p...)
+	}
+	return out
+}
+
+func TestAStallAcrossTheWindowsEndKeepsItsBurst(t *testing.T) {
+	// A window closes on a packet, so a stall across its end is still going when
+	// its time is up. However late the stall ends, the packets that came with its
+	// end are counted with it: a window that closed on the first of them read
+	// `then 1 at once`, a machine's verdict for what may be a network's stall.
+	every := ms(5000)
+	got := windowsOf(every, joined(
+		[]time.Duration{ms(4900)},
+		burst(ms(5300), 13), // a 400 ms stall ending 300 ms past the time
+		[]time.Duration{ms(5317)},
+	)...)
+	if len(got) != 1 || got[0].worst < ms(399) || got[0].atOnce != 13 {
+		t.Fatalf("a stall ending 300 ms late read as %+v, expected one window, 400ms then 13", got)
 	}
 }
 
-func TestRisingGapsDoNotHoldAWindowOpen(t *testing.T) {
-	// Each new worst gap starts a burst of its own. A stranger making every gap
-	// a hair longer than the last would restart it on every packet; the window
-	// is held past its time for one burst's length at most, whatever comes in.
-	base := time.Unix(0, 0)
-	var flow arrivals
-	flow.note(base)
-	at := base
-	gap := 20 * time.Millisecond
-	closed := false
-	for i := 0; i < 1000 && !closed; i++ {
-		at = at.Add(gap)
+func TestALongerStallAfterTheWaitBeganIsCountedInTheNextWindow(t *testing.T) {
+	// A side standing for its partner sends its recent input again once a second,
+	// two dozen at once. The first resend past the window's time ends its worst
+	// gap; the next, a second later, may end a longer one. That one opens the next
+	// window with its burst whole, rather than restarting the count in this one
+	// and closing it on its first packet.
+	every := ms(5000)
+	got := windowsOf(every, joined(
+		[]time.Duration{ms(4500)},
+		burst(ms(5500), 27),         // a gap of 1000 ms, then the resend
+		burst(ms(6510), 27),         // 1007 ms after the last of those: longer
+		steady(ms(6530), ms(11600)), // play goes on and closes the next window
+	)...)
+	if len(got) != 2 {
+		t.Fatalf("expected two windows, got %+v", got)
+	}
+	if got[0].worst < ms(999) || got[0].atOnce != 27 {
+		t.Fatalf("the first resend read as %+v, expected 1s then 27", got[0])
+	}
+	if got[1].worst < ms(1007) || got[1].atOnce != 27 {
+		t.Fatalf("the second resend read as %+v, expected 1.007s then 27", got[1])
+	}
+
+	// A small new worst gap past the time, then a stall: the stall is not cut
+	// down to `then 1 at once` either.
+	got = windowsOf(every, joined(
+		[]time.Duration{ms(4975), ms(5010)}, // a 35 ms gap past the time
+		burst(ms(5410), 12),                 // then a 400 ms stall
+		steady(ms(5430), ms(10500)),
+	)...)
+	if len(got) != 2 || got[1].worst < ms(399) || got[1].atOnce != 12 {
+		t.Fatalf("a stall after a small late gap read as %+v, expected 400ms then 12 in the second window", got)
+	}
+}
+
+func TestNothingAStrangerSendsHoldsAWindowOpen(t *testing.T) {
+	// The window waits for its burst only while the burst lasts, and no longer
+	// than mostHeldOpen. Gaps each a hair longer than the last, or packets back to
+	// back without end, still close it.
+	every := ms(100)
+	var rising []time.Duration
+	at, gap := time.Duration(0), ms(20)
+	for i := 0; i < 1000; i++ {
+		at += gap
 		gap += time.Microsecond
-		flow.note(at)
-		// The window's time was up with the first packet.
-		closed = flow.closes(at, at.Sub(base)-20*time.Millisecond)
+		rising = append(rising, at)
 	}
-	if !closed {
-		t.Fatal("a thousand packets, each gap longer than the last, held the window open")
+	if got := windowsOf(every, rising...); len(got) < 100 {
+		t.Fatalf("twenty seconds of rising gaps closed %d windows of a tenth of a second", len(got))
 	}
-	if late := at.Sub(base) - 20*time.Millisecond; late > mostHeldOpen+gap {
-		t.Fatalf("the window was held %v past its time, more than %v", late, mostHeldOpen)
+	endless := joined([]time.Duration{0}, burst(ms(150), 20000)) // two seconds back to back
+	got := windowsOf(every, endless...)
+	if len(got) < 2 {
+		t.Fatalf("two seconds back to back closed %d windows", len(got))
 	}
-	var early arrivals
-	early.note(base)
-	if early.closes(base, -time.Millisecond) {
-		t.Fatal("a window closed before its time")
-	}
-}
-
-func TestAStallEndingLongPastTheWindowsTimeKeepsItsBurst(t *testing.T) {
-	// A window closes on a packet, so a stall across its end closes it on the
-	// stall's last packet, however late that is. The burst is waited for from
-	// there, not from the window's time: counted from there, a stall ending
-	// 300 ms late closed the window on its first packet and read `then 1 at once`.
-	base := time.Unix(0, 0)
-	every := 5 * time.Second
-	var flow arrivals
-	flow.note(base.Add(4900 * time.Millisecond))
-	end := base.Add(5300 * time.Millisecond) // a 400 ms stall, 300 ms past the time
-	for i := 0; i < 13; i++ {
-		at := end.Add(time.Duration(i) * 100 * time.Microsecond)
-		flow.note(at)
-		if flow.closes(at, at.Sub(base)-every) {
-			t.Fatalf("the window closed on packet %d of the burst that ended the stall", i+1)
-		}
-	}
-	after := end.Add(17 * time.Millisecond)
-	flow.note(after)
-	if !flow.closes(after, after.Sub(base)-every) {
-		t.Fatal("the burst is in, yet the window stays open")
-	}
-	if got := flow.atOnce(); got != 13 {
-		t.Fatalf("the stall's burst came out as %d at once, expected 13", got)
+	if got[0].atOnce > mostTogether {
+		t.Fatalf("the count of packets at once ran to %d", got[0].atOnce)
 	}
 }
 

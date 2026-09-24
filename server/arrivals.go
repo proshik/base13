@@ -19,10 +19,9 @@ const togetherWithin = 4 * time.Millisecond
 // window open for good.
 const mostTogether = 64
 
-// mostHeldOpen is how long a window may wait for a burst once its time is up:
-// long enough for mostTogether packets back to back. Every new worst gap starts
-// a burst of its own, so without it a stranger making each gap a hair longer
-// than the last would hold the window open for good.
+// mostHeldOpen is how long a window may wait for its burst once its time is up:
+// long enough for mostTogether packets back to back, and a stream sent back to
+// back without end does not hold it longer.
 const mostHeldOpen = mostTogether * togetherWithin
 
 type arrivals struct {
@@ -34,7 +33,8 @@ type arrivals struct {
 	// included, and whether they may still be coming.
 	together int
 	counting bool
-	// When the window, its time up, began to wait for a burst; zero while not.
+	// When the window, its time up, began to wait for the burst that ended its
+	// worst gap; zero while it is not waiting.
 	heldSince time.Time
 }
 
@@ -78,26 +78,6 @@ func (a *arrivals) atOnce() int { return a.together }
 // stall ending right on the window's end would always read as a machine's.
 func (a *arrivals) settling() bool { return a.counting }
 
-// closes reports whether the window closes on the packet that came at `now`,
-// `late` past the window's time: once what ended its worst gap is in, or once it
-// has waited mostHeldOpen for it. The wait is counted from the first packet past
-// the time, not from the time: a window closes only on a packet, so a stall
-// across its end is still going when the time is up, and counted from there a
-// stall ending 300 ms late would close the window on its own first packet. A
-// new worst gap later does not start the wait over.
-func (a *arrivals) closes(now time.Time, late time.Duration) bool {
-	if late < 0 {
-		return false
-	}
-	if !a.settling() {
-		return true
-	}
-	if a.heldSince.IsZero() {
-		a.heldSince = now
-	}
-	return now.Sub(a.heldSince) >= mostHeldOpen
-}
-
 // measured reports whether the window holds a gap at all. Only a window holding
 // nothing but a stream's first packet does not, and its worst gap of zero is
 // no measurement: reported, it would pass for a perfect stream.
@@ -115,4 +95,39 @@ func (a *arrivals) forget() {
 	a.together = 0
 	a.counting = false
 	a.heldSince = time.Time{}
+}
+
+// take notes a packet arriving at `now` in the window opened at `*window`, which
+// lasts `every`. For each window the packet closes it calls `close` with the
+// time the window ends; `close` reads the figures, and take then clears them
+// and opens the next window.
+//
+// A window whose time is up closes on the next packet — unless that packet
+// ended the window's worst gap. Then the window waits for the packets that came
+// together with it, so the count is whole: a window that closed on the first of
+// them read `then 1 at once` for any stall ending past its time. It waits only
+// while they keep coming back to back, and mostHeldOpen at the longest. The
+// first packet that does not come with them closes the window before it is
+// noted, and opens the next one: the gap it ends may be another stall, with a
+// burst of its own — a side standing for its partner sends its input again
+// once a second — and counted here it would start the count over at one.
+func (a *arrivals) take(now time.Time, window *time.Time, every time.Duration, close func(end time.Time)) {
+	if !a.heldSince.IsZero() && (now.Sub(a.last) >= togetherWithin || now.Sub(a.heldSince) >= mostHeldOpen) {
+		a.closeWindow(now, window, close)
+	}
+	a.note(now)
+	if now.Sub(*window) < every || !a.heldSince.IsZero() {
+		return
+	}
+	if a.settling() {
+		a.heldSince = now
+		return
+	}
+	a.closeWindow(now, window, close)
+}
+
+func (a *arrivals) closeWindow(now time.Time, window *time.Time, close func(end time.Time)) {
+	close(now)
+	a.forget()
+	*window = now
 }
