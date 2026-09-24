@@ -125,3 +125,35 @@ func _assert_copied(a: Object, b: Object, where: String) -> void:
 					assert_eq(vb[i], va[i], "%s[%d]" % [path, i])
 		else:
 			assert_eq(vb, va, path)
+
+## An enemy materialising on top of a player and the two parting: the rule that
+## lets them part reads only the world, so stepping back across it must not
+## change the outcome.
+func test_stepping_back_across_two_tanks_parting_gives_the_same_world() -> void:
+	var frames: Array = []
+	for t in 400:
+		frames.append([Types.IN_RIGHT if t > 80 else 0, 0])
+	var straight := _overlap_sim()
+	_run(straight, frames, 1, 400)
+	var sim := _overlap_sim()
+	_run(sim, frames, 1, 50)
+	var saved := sim.save()
+	for k in 60:
+		sim.tick([Types.IN_LEFT, 0])
+		sim.drain_events()
+	sim.restore(saved)
+	_run(sim, frames, 50, 400)
+	assert_eq(sim.state_hash(), straight.state_hash())
+	var p: Entities.Tank = straight.get_state().player_tanks()[0]
+	assert_ne(p.pos, Consts.tile_to_unit(Consts.ENEMY_SPAWN_TILES[0]), "the scenario has the player drive off")
+
+## One player parked on the first spawn point as the first enemy starts to
+## blink there.
+func _overlap_sim() -> GameSim:
+	var sim := GameSim.new(LevelFixture.empty_level(), 1, SimConfig.new(), 1, 1)
+	sim.tick([0, 0])
+	sim.drain_events()
+	var p: Entities.Tank = sim.get_state().player_tanks()[0]
+	p.pos = Consts.tile_to_unit(Consts.ENEMY_SPAWN_TILES[0])
+	p.shield_ticks = 1000000
+	return sim

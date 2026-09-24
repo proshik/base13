@@ -105,3 +105,46 @@ func test_on_ice_checks_the_cell_under_the_centre() -> void:
 	var c := state.terrain.cell_at_unit(t.center())
 	state.terrain.set_cell(c.x, c.y, Types.Cell.ICE)
 	assert_true(Movement.on_ice(state, t))
+
+## Two tanks that already overlap — an enemy that finished blinking under a
+## player, a player that came back on top of an enemy — must be able to part.
+## Blocking each other on both axes, neither could move ever again.
+func test_overlapping_tanks_can_drive_apart() -> void:
+	var a := _tank(Vector2i(1024, 1024), Types.Dir.LEFT)
+	var b := _tank(Vector2i(1024 + 100, 1024), Types.Dir.RIGHT)
+	assert_eq(Movement.step(state, a, Types.Dir.LEFT, 16), 16, "moving away from the tank it overlaps")
+	assert_eq(Movement.step(state, b, Types.Dir.RIGHT, 16), 16, "and the other one the other way")
+	assert_eq(Movement.step(state, a, Types.Dir.UP, 16), 16, "across the overlap as well")
+
+func test_overlapping_tank_cannot_drive_deeper() -> void:
+	var a := _tank(Vector2i(1024, 1024), Types.Dir.RIGHT)
+	var b := _tank(Vector2i(1024 + 100, 1024))
+	assert_eq(Movement.step(state, a, Types.Dir.RIGHT, 16), 0, "not a unit further into it")
+	assert_not_null(b)
+
+func test_tanks_on_one_spot_can_leave_every_way() -> void:
+	for d in 4:
+		var a := _tank(Vector2i(1024, 1024))
+		var b := _tank(Vector2i(1024, 1024))
+		assert_eq(Movement.step(state, a, d, 16), 16, "direction %d" % d)
+		a.alive = false
+		b.alive = false
+
+func test_a_tank_parted_from_another_is_blocked_by_it_again() -> void:
+	var a := _tank(Vector2i(1024, 1024), Types.Dir.LEFT)
+	var b := _tank(Vector2i(1024 + 100, 1024))
+	Movement.step(state, a, Types.Dir.LEFT, 200)
+	assert_eq(a.pos.x, 1024 - 200)
+	assert_eq(Movement.step(state, a, Types.Dir.RIGHT, 200), 200 - Consts.TANK + 100,
+		"it drives back only until it touches")
+	assert_not_null(b)
+
+func test_can_occupy_lets_an_overlapping_tank_step_away_only() -> void:
+	# The AI picks its options with can_occupy: with none of the four it would
+	# not even turn.
+	var a := _tank(Vector2i(1024, 1024))
+	var b := _tank(Vector2i(1024 + 100, 1024))
+	assert_true(Movement.can_occupy(state, a, a.pos + Types.DIR_VEC[Types.Dir.LEFT]))
+	assert_true(Movement.can_occupy(state, a, a.pos + Types.DIR_VEC[Types.Dir.UP]))
+	assert_false(Movement.can_occupy(state, a, a.pos + Types.DIR_VEC[Types.Dir.RIGHT]))
+	assert_not_null(b)

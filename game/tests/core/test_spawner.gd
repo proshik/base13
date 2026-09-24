@@ -87,11 +87,55 @@ func test_spawn_resumes_when_a_slot_frees_up() -> void:
 	sim.tick([0, 0])
 	assert_eq(_s().enemy_tanks().size(), cfg.max_enemies_alive, "a slot freed up and a new one appeared")
 
+func _spawn_point(i: int) -> Vector2i:
+	return Consts.tile_to_unit(Consts.ENEMY_SPAWN_TILES[i])
+
+func _player() -> Entities.Tank:
+	return _s().player_tanks()[0]
+
+func _overlap(a: Entities.Tank, b: Entities.Tank) -> bool:
+	return Movement.overlaps(a.pos, Consts.TANK, b.pos, Consts.TANK)
+
 func test_occupied_spawn_point_postpones_the_spawn() -> void:
 	_park_enemy(Consts.tile_to_unit(Consts.ENEMY_SPAWN_TILES[0]))
 	_s().spawn_timer = 0
 	sim.tick([0, 0])
 	assert_eq(_s().enemy_tanks().size(), 1, "nobody spawns on an occupied point")
+
+## The report of 2026-09-24: a player on the point where an enemy was blinking.
+## A blinking tank does not block, so the player drives in; then the enemy
+## materialises on top of the player, and each blocked the other on both axes
+## for good.
+func test_player_driven_onto_a_blinking_enemy_can_drive_off() -> void:
+	sim.tick([0, 0])
+	var e: Entities.Tank = _s().enemy_tanks()[0]
+	var p := _player()
+	p.pos = _spawn_point(0) + Vector2i(Consts.TANK, 0)
+	p.shield_ticks = 1000000
+	while not e.is_materialized():
+		sim.tick([Types.IN_LEFT, 0])
+	assert_true(_overlap(p, e), "the player is on the point as the enemy appears")
+	# Back the way it came: the enemy leaves heading down, and a player
+	# following it would only be stopped by its stern.
+	var before: Vector2i = p.pos
+	sim.tick([Types.IN_RIGHT, 0])
+	assert_ne(p.pos, before, "the player is not locked in")
+	for i in 60:
+		sim.tick([Types.IN_RIGHT, 0])
+	assert_false(_overlap(p, e), "the two have parted")
+
+func test_enemy_materialised_under_a_standing_player_drives_out() -> void:
+	sim.tick([0, 0])
+	var e: Entities.Tank = _s().enemy_tanks()[0]
+	var p := _player()
+	p.pos = _spawn_point(0)
+	p.shield_ticks = 1000000
+	for i in 600:
+		sim.tick([0, 0])
+		if e.is_materialized() and not _overlap(p, e):
+			break
+	assert_true(e.is_materialized())
+	assert_false(_overlap(p, e), "the enemy found a way out from under the player")
 
 func test_all_twenty_enemies_eventually_spawn() -> void:
 	var spawned := 0

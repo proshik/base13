@@ -18,23 +18,34 @@ static func can_occupy(state: WorldState, tank: Entities.Tank, pos: Vector2i) ->
 		var other: Entities.Tank = o
 		if other.id == id or not other.alive or other.spawn_ticks != 0:
 			continue
-		if overlaps(pos, Consts.TANK, other.pos, Consts.TANK):
+		if overlaps(pos, Consts.TANK, other.pos, Consts.TANK) \
+				and not _parting(tank.pos, pos, other.pos):
 			return false
 	return true
+
+## Two tanks can come to overlap: an enemy finishes blinking under a player, a
+## player comes back on top of an enemy. Blocking each other on both axes, they
+## could never move again, so a tank that already overlaps another may make any
+## move that does not bring it closer — only the way in is shut.
+static func _parting(from: Vector2i, to: Vector2i, other: Vector2i) -> bool:
+	if not overlaps(from, Consts.TANK, other, Consts.TANK):
+		return false
+	return absi(to.x - other.x) + absi(to.y - other.y) \
+		>= absi(from.x - other.x) + absi(from.y - other.y)
 
 static func turn(state: WorldState, tank: Entities.Tank, new_dir: int) -> void:
 	if tank.dir == new_dir:
 		return
 	tank.dir = new_dir
-	var before: Vector2i = tank.pos
+	var snapped: Vector2i = tank.pos
 	if new_dir == Types.Dir.UP or new_dir == Types.Dir.DOWN:
-		tank.pos.x = snap_to_cell(tank.pos.x)
+		snapped.x = snap_to_cell(snapped.x)
 	else:
-		tank.pos.y = snap_to_cell(tank.pos.y)
-	# The snap can push a tank into a wall — then it is rolled back, or the tank
+		snapped.y = snap_to_cell(snapped.y)
+	# The snap can push a tank into a wall — then it is not taken, or the tank
 	# would get stuck.
-	if not can_occupy(state, tank, tank.pos):
-		tank.pos = before
+	if can_occupy(state, tank, snapped):
+		tank.pos = snapped
 
 ## Moves one unit at a time, stopping at the first occupied step.
 ## Returns the distance actually covered.
@@ -47,7 +58,7 @@ static func turn(state: WorldState, tank: Entities.Tank, new_dir: int) -> void:
 static func step(state: WorldState, tank: Entities.Tank, dir: int, distance: int) -> int:
 	var delta: Vector2i = Types.DIR_VEC[dir]
 	var vertical: bool = delta.x == 0
-	var blockers := _blockers_on_line(state, tank, vertical)
+	var blockers := _blockers_on_line(state, tank, vertical, delta.x + delta.y)
 	var terrain: Terrain = state.terrain
 	# No cell has these indices, so the first step always looks at the terrain.
 	var cx0 := Consts.GRID + 1
@@ -88,16 +99,24 @@ static func bands_meet(a: int, sa: int, b: int, sb: int) -> bool:
 
 ## The tanks that could stop this one, settled before it steps: it keeps one
 ## coordinate the whole way, and a tank off that band can never be in the way.
-static func _blockers_on_line(state: WorldState, tank: Entities.Tank, vertical: bool) -> Array:
+## Nor can one it already overlaps and drives away from (see _parting): each
+## step only takes it further, and once clear it never meets that tank again.
+static func _blockers_on_line(state: WorldState, tank: Entities.Tank, vertical: bool,
+		sign: int) -> Array:
 	var out: Array = []
 	var id: int = tank.id
 	var fixed: int = tank.pos.x if vertical else tank.pos.y
+	var along: int = tank.pos.y if vertical else tank.pos.x
 	for o in state.tanks:
 		var other: Entities.Tank = o
 		if other.id == id or not other.alive or other.spawn_ticks != 0:
 			continue
 		if not bands_meet(fixed, Consts.TANK,
 				other.pos.x if vertical else other.pos.y, Consts.TANK):
+			continue
+		var other_along: int = other.pos.y if vertical else other.pos.x
+		if bands_meet(along, Consts.TANK, other_along, Consts.TANK) \
+				and (along - other_along) * sign >= 0:
 			continue
 		out.append(other)
 	return out
