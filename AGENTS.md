@@ -366,6 +366,14 @@ Rakes we have already stepped on:
   brings a twelve-tick rollback inside a browser frame. Anything added to those loops
   must be invariant-free, and `Golden.EXPECTED` is what proves it did not change the
   game.
+- **Two tanks can come to overlap, and overlapping tanks must be able to part.** A
+  blinking enemy does not block, so a player drives onto its spawn point, and the enemy
+  materialises on top of the player; a player can also come back on top of an enemy. Each
+  then found the other in its way on both axes, and neither moved again — reported from a
+  network game on 2026-09-24 as "everything stops". `Movement` lets a tank that already
+  overlaps another make any move that does not bring it closer. Beside it, the spawner
+  waited on an occupied point, so a player parked there held back the whole wave; an
+  occupied point now passes its turn to the next.
 - **A stand is not a wait.** The server scores a slow window `network` if it waited and
   `machine` if it did not, and 0.5.0 kept stands longer than `FROZEN_MS` (150 ms) out of
   its waits: they are a frame loop standing still, not a network falling short. The
