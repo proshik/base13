@@ -96,11 +96,40 @@ func _player() -> Entities.Tank:
 func _overlap(a: Entities.Tank, b: Entities.Tank) -> bool:
 	return Movement.overlaps(a.pos, Consts.TANK, b.pos, Consts.TANK)
 
-func test_occupied_spawn_point_postpones_the_spawn() -> void:
-	_park_enemy(Consts.tile_to_unit(Consts.ENEMY_SPAWN_TILES[0]))
+func test_occupied_spawn_point_passes_the_turn_to_the_next() -> void:
+	var parked := _park_enemy(_spawn_point(0))
 	_s().spawn_timer = 0
 	sim.tick([0, 0])
-	assert_eq(_s().enemy_tanks().size(), 1, "nobody spawns on an occupied point")
+	var enemies := _s().enemy_tanks()
+	assert_eq(enemies.size(), 2, "the queue does not wait on one point")
+	assert_eq(enemies[1].pos, _spawn_point(1), "nobody spawns on an occupied point")
+	assert_eq(_s().spawn_point_index, 2, "the cycle goes on from the point used")
+	assert_not_null(parked)
+
+func test_every_point_occupied_postpones_the_spawn() -> void:
+	for i in Consts.ENEMY_SPAWN_TILES.size():
+		_park_enemy(_spawn_point(i))
+	_s().spawn_timer = 0
+	sim.tick([0, 0])
+	assert_eq(_s().enemy_tanks().size(), Consts.ENEMY_SPAWN_TILES.size(), "nowhere to appear")
+	assert_eq(_s().spawn_point_index, 0, "the turn stays where it was")
+
+## A player sitting on a spawn point used to hold the whole wave back: the
+## spawner waited on that one point, and the level could not be finished.
+func test_a_player_camping_a_spawn_point_does_not_hold_the_wave() -> void:
+	var p := _player()
+	p.pos = _spawn_point(0)
+	p.shield_ticks = 1000000
+	var spawned := 0
+	for i in 5000:
+		sim.tick([0, 0])
+		for t in _s().enemy_tanks():
+			t.alive = false
+			spawned += 1
+		p.pos = _spawn_point(0)
+		if _s().enemy_queue.is_empty():
+			break
+	assert_eq(spawned, 20, "the whole wave came out elsewhere")
 
 ## The report of 2026-09-24: a player on the point where an enemy was blinking.
 ## A blinking tank does not block, so the player drives in; then the enemy

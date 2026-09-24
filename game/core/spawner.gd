@@ -35,14 +35,20 @@ func update() -> void:
 	if _state.alive_enemy_count() >= _config.max_enemies_alive:
 		return
 
-	var pos: Vector2i = Consts.tile_to_unit(Consts.ENEMY_SPAWN_TILES[_state.spawn_point_index])
-	if _blocked(pos):
+	# An occupied point passes its turn to the next one. Waiting on it instead
+	# let a player parked there hold back the whole wave, and the level could
+	# not end. Only with every point occupied does the spawn wait.
+	var count := Consts.ENEMY_SPAWN_TILES.size()
+	for i in count:
+		var index: int = (_state.spawn_point_index + i) % count
+		var pos: Vector2i = Consts.tile_to_unit(Consts.ENEMY_SPAWN_TILES[index])
+		if _blocked(pos):
+			continue
+		var type: int = _state.enemy_queue.pop_front()
+		_spawn_enemy(type, pos)
+		_state.spawn_point_index = (index + 1) % count
+		_state.spawn_timer = _config.spawn_interval_ticks
 		return
-
-	var type: int = _state.enemy_queue.pop_front()
-	_spawn_enemy(type, pos)
-	_state.spawn_point_index = (_state.spawn_point_index + 1) % Consts.ENEMY_SPAWN_TILES.size()
-	_state.spawn_timer = _config.spawn_interval_ticks
 
 func _blocked(pos: Vector2i) -> bool:
 	for t in _state.tanks:
