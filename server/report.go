@@ -7,18 +7,22 @@ package main
 // though, and only the player's side sees that: how long a window of ticks
 // took, how often it stopped to wait for the partner's input, at what input
 // delay and at what frame rate. So the client reports these once a window, and
-// the server counts what it is told.
+// the server counts what it is told, and writes it to its log beside its own
+// window line: a complaint is then read from one log, by the room's code.
 //
 // None of it is taken on trust. A report is whatever a stranger chose to write.
 // It is read into a fixed shape or dropped, every figure is held to what a real
 // window can be, and over time a connection is heard no more than once an
-// interval. Nothing from a report is relayed, journaled or logged. A forged
-// report can still skew the figures within those bounds, and that is the price
-// of hearing from the player's side at all.
+// interval. Nothing from a report is relayed or journaled, and the log gets
+// only what the server read: whole numbers within their bounds, in the server's
+// own words. A forged report can still skew the figures within those bounds,
+// and that is the price of hearing from the player's side at all.
 
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"log"
 	"math"
 	"strconv"
 	"time"
@@ -44,6 +48,24 @@ type pace struct {
 	Waits int `json:"waits"` // times the game stopped for the partner's input
 	Delay int `json:"delay"` // the input delay, in ticks
 	FPS   int `json:"fps"`   // frames drawn a second
+	// The rest of the client's own line, which only the current shape carries,
+	// and whether this report carried it. Only for the log: no family counts it.
+	detail paceDetail
+	full   bool
+}
+
+// paceDetail is the rest of a window as the client's own line prints it.
+type paceDetail struct {
+	Frozen          int // stands too long to be the network: a frame loop standing still
+	FrozenLongestMS int
+	StopsLongestMS  int
+	Rollbacks       int // times a guess was wrong and the game stepped back
+	Deepest         int // how far back the deepest one went, in ticks
+	ResimMS         int // what stepping back cost the machine
+	Skips           int // ticks let go to fall back into step
+	Lead            int // how far ahead of the partner the side ran, in ticks
+	PartnerLead     int // the same, as the partner last said it
+	LongestFrameMS  int
 }
 
 // reportKind is what a text message from a player turned out to be.
@@ -53,52 +75,114 @@ const (
 	malformedReport reportKind = iota
 	paceReport
 	desyncReport
+	noteReport
 )
 
-// readReport reads a text message as one of the two reports a player may send.
-// There are exactly two shapes:
+// report is a text message from a player, as the server read it.
+type report struct {
+	kind reportKind
+	pace pace
+	tick int // the tick a desync was seen on, or -1 when it was not said
+	note note
+}
+
+// A figure of a pace report: its key and where it goes. The first four are
+// every client's, the rest only the current shape's.
+type figure struct {
+	name string
+	into func(*pace) *int
+}
+
+var paceFigures = []figure{
+	{"speed", func(p *pace) *int { return &p.Speed }},
+	{"waits", func(p *pace) *int { return &p.Waits }},
+	{"delay", func(p *pace) *int { return &p.Delay }},
+	{"fps", func(p *pace) *int { return &p.FPS }},
+}
+
+var detailFigures = []figure{
+	{"frozen", func(p *pace) *int { return &p.detail.Frozen }},
+	{"frozen_longest_ms", func(p *pace) *int { return &p.detail.FrozenLongestMS }},
+	{"stops_longest_ms", func(p *pace) *int { return &p.detail.StopsLongestMS }},
+	{"rollbacks", func(p *pace) *int { return &p.detail.Rollbacks }},
+	{"deepest", func(p *pace) *int { return &p.detail.Deepest }},
+	{"resim_ms", func(p *pace) *int { return &p.detail.ResimMS }},
+	{"skips", func(p *pace) *int { return &p.detail.Skips }},
+	{"lead", func(p *pace) *int { return &p.detail.Lead }},
+	{"partner_lead", func(p *pace) *int { return &p.detail.PartnerLead }},
+	{"longest_frame_ms", func(p *pace) *int { return &p.detail.LongestFrameMS }},
+}
+
+// readReport reads a text message as one of the reports a player may send.
+// The shapes are exact:
 //
 //	{"report":{"speed":95,"waits":0,"delay":6,"fps":60}}
+//	{"report":{"speed":95,"waits":0,"delay":6,"fps":60,"frozen":0,...}}
 //	{"desync":true}
+//	{"desync":1260}
+//	{"note":{"what":"hidden"}}
+//
+// A pace report has either the four figures every client sends or those and
+// the ten of the current shape, nothing between. A desync says the tick it was
+// seen on, or on an older build only that it happened. A note is one of the
+// shapes in notes.go. A client sends the current shapes only to a server whose
+// welcome announced notes.
 //
 // Everything else is malformed: a key in another case, a key too many or too
 // few, a number that is not whole, a string, a null. Keys are compared exactly,
 // not through a struct, because the standard decoder folds case and fills a
 // missing or null field with zero, and a zero here would count as a real
 // window. Spacing, key order and how a whole number is spelled are up to the
-// writer. A pace report comes back already clamped.
-func readReport(data []byte) (reportKind, pace) {
+// writer. What comes back is already clamped.
+func readReport(data []byte) report {
+	malformed := report{kind: malformedReport}
 	var message map[string]json.RawMessage
 	if json.Unmarshal(data, &message) != nil || len(message) != 1 {
-		return malformedReport, pace{}
+		return malformed
 	}
 	if raw, found := message["desync"]; found {
-		if string(bytes.TrimSpace(raw)) != "true" {
-			return malformedReport, pace{}
+		if string(bytes.TrimSpace(raw)) == "true" {
+			return report{kind: desyncReport, tick: -1}
 		}
-		return desyncReport, pace{}
+		tick, ok := wholeNumber(raw)
+		if !ok || tick < 0 {
+			return malformed
+		}
+		return report{kind: desyncReport, tick: min(tick, maxNoteFigure)}
+	}
+	if raw, found := message["note"]; found {
+		n, ok := readNote(raw)
+		if !ok {
+			return malformed
+		}
+		return report{kind: noteReport, note: n}
 	}
 	raw, found := message["report"]
 	if !found {
-		return malformedReport, pace{}
+		return malformed
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil {
+		return malformed
 	}
 	var p pace
-	figures := [...]struct {
-		name string
-		into *int
-	}{{"speed", &p.Speed}, {"waits", &p.Waits}, {"delay", &p.Delay}, {"fps", &p.FPS}}
-	var fields map[string]json.RawMessage
-	if json.Unmarshal(raw, &fields) != nil || len(fields) != len(figures) {
-		return malformedReport, pace{}
+	figures := paceFigures
+	switch len(fields) {
+	case len(paceFigures):
+	case len(paceFigures) + len(detailFigures):
+		figures = append(append([]figure{}, paceFigures...), detailFigures...)
+		p.full = true
+	default:
+		return malformed
 	}
-	for _, figure := range figures {
-		n, ok := wholeNumber(fields[figure.name])
+	for _, f := range figures {
+		n, ok := wholeNumber(fields[f.name])
 		if !ok {
-			return malformedReport, pace{}
+			return malformed
 		}
-		*figure.into = n
+		*f.into(&p) = n
 	}
-	return paceReport, clamp(p)
+	return report{kind: paceReport, pace: clamp(p)}
 }
 
 // wholeNumber reads one JSON value as a whole number, however it is spelled:
@@ -124,13 +208,48 @@ func wholeNumber(raw json.RawMessage) (int, bool) {
 // raises it to. The frame rate stops past any display. Below, nothing is
 // negative. Without this, one report of a billion waits would outweigh every
 // honest window in a histogram's sum.
+//
+// The rest of the current shape feeds no family, only the log, and is held the
+// same way so that no figure there runs past seven digits: counts of the
+// window's ticks stop at three hundred, a duration at an hour, rollbacks at
+// ten thousand, a lead at a thousand ticks either way.
 func clamp(p pace) pace {
+	const hour = 3_600_000
+	d := p.detail
 	return pace{
 		Speed: min(max(p.Speed, 0), 200),
 		Waits: min(max(p.Waits, 0), 300),
 		Delay: min(max(p.Delay, 0), 64),
 		FPS:   min(max(p.FPS, 0), 1000),
+		detail: paceDetail{
+			Frozen:          min(max(d.Frozen, 0), 300),
+			FrozenLongestMS: min(max(d.FrozenLongestMS, 0), hour),
+			StopsLongestMS:  min(max(d.StopsLongestMS, 0), hour),
+			Rollbacks:       min(max(d.Rollbacks, 0), 10_000),
+			Deepest:         min(max(d.Deepest, 0), 300),
+			ResimMS:         min(max(d.ResimMS, 0), hour),
+			Skips:           min(max(d.Skips, 0), 300),
+			Lead:            min(max(d.Lead, -1000), 1000),
+			PartnerLead:     min(max(d.PartnerLead, -1000), 1000),
+			LongestFrameMS:  min(max(d.LongestFrameMS, 0), hour),
+		},
+		full: p.full,
 	}
+}
+
+// line is a window as the log says it, in the words of the client's own line.
+// Waits are the client's stops. A report of the older shape says what it has.
+func (p pace) line() string {
+	if !p.full {
+		return fmt.Sprintf("speed %d%%, stops %d, %d fps, delay %d", p.Speed, p.Waits, p.FPS, p.Delay)
+	}
+	d := p.detail
+	return fmt.Sprintf("speed %d%%, stops %d (longest %d ms), frozen %d (longest %d ms), "+
+		"rollbacks %d (deepest %d), resim %d ms, skips %d, lead %d against %d, longest frame %d ms, "+
+		"%d fps, delay %d",
+		p.Speed, p.Waits, d.StopsLongestMS, d.Frozen, d.FrozenLongestMS,
+		d.Rollbacks, d.Deepest, d.ResimMS, d.Skips, d.Lead, d.PartnerLead, d.LongestFrameMS,
+		p.FPS, p.Delay)
 }
 
 // verdict names what a window was lost to. It is the same rule a person reads
@@ -150,57 +269,71 @@ func verdict(speed, waits int) string {
 // reportGate is what one connection's reports have had taken so far. It lives
 // on the goroutine that reads the connection and nowhere else.
 type reportGate struct {
-	// The pace allowance, kept as time rather than as a count of reports: an
-	// interval of credit is one report. It is full at paceBurst intervals.
-	// paceSeen is when the credit was last brought up to date, and zero until
-	// the first pace report, when a connection starts with a full allowance.
-	paceCredit time.Duration
-	paceSeen   time.Time
-	desynced   bool // whether this connection has already reported a desync
+	pace     allowance
+	notes    allowance
+	desynced bool // whether this connection has already reported a desync
 }
 
-// allowPace reports whether a pace report arriving now fits the connection's
-// allowance, and spends it if it does. Time since the last report earns
-// credit, up to paceBurst intervals of it, and a report taken spends one
-// interval. A report turned away spends nothing but still brings the credit up
-// to date, so turning one away never costs the next. The clock is a parameter
-// so a test can hold it.
-func (g *reportGate) allowPace(now time.Time, every time.Duration) bool {
-	full := paceBurst * every
-	if g.paceSeen.IsZero() {
-		g.paceCredit = full
+// allowance is a bucket of credit kept as time rather than as a count: an
+// interval of credit is one message. seen is when the credit was last brought
+// up to date, and zero until the first message, when a connection starts with
+// a full allowance.
+type allowance struct {
+	credit time.Duration
+	seen   time.Time
+}
+
+// allow reports whether a message arriving now fits the allowance, and spends
+// it if it does. Time since the last message earns credit, up to burst
+// intervals of it, and a message taken spends one interval. A message turned
+// away spends nothing but still brings the credit up to date, so turning one
+// away never costs the next. The clock is a parameter so a test can hold it.
+func (a *allowance) allow(now time.Time, every time.Duration, burst int) bool {
+	full := time.Duration(burst) * every
+	if a.seen.IsZero() {
+		a.credit = full
 	} else {
 		// Bounded before it is added, so a connection quiet for years cannot
 		// overflow the sum, and a clock that stepped back earns nothing.
-		g.paceCredit = min(g.paceCredit+min(max(now.Sub(g.paceSeen), 0), full), full)
+		a.credit = min(a.credit+min(max(now.Sub(a.seen), 0), full), full)
 	}
-	g.paceSeen = now
-	if g.paceCredit < every {
+	a.seen = now
+	if a.credit < every {
 		return false
 	}
-	g.paceCredit -= every
+	a.credit -= every
 	return true
 }
 
-// takeReport counts one text message a seated player sent after the hello.
+// allowPace reports whether a pace report arriving now fits the connection's
+// allowance of paceBurst, and spends it if it does.
+func (g *reportGate) allowPace(now time.Time, every time.Duration) bool {
+	return g.pace.allow(now, every, paceBurst)
+}
+
+// takeReport counts one text message a seated player sent after the hello, and
+// writes what it took to the log, one line a message.
 //
 // A connection may have two pace reports taken at once, and earns one back
-// every interval. A report past that allowance is rejected as early. A desync
-// is not a window, so the allowance does not apply, but a connection reports a
-// desync only once: a repeat is also rejected as early, so a client that keeps
-// repeating it cannot keep taking the room's lock.
+// every interval. A report past that allowance is rejected as early. Notes have
+// an allowance of their own, noteBurst at once and one back every note
+// interval. A desync is not a window, so no allowance applies, but a
+// connection reports a desync only once: a repeat is also rejected as early,
+// so a client that keeps repeating it cannot keep taking the room's lock.
 //
 // A desync counts once a room, whichever side reports it first, and only in a
 // room that has held a pair: before a partner came there was no match to part.
 // A desync from a room that never paired is neither counted nor rejected, since
 // it is well formed and on time. It still uses up the connection's one desync.
 //
-// Nothing here writes to the log. A report's content belongs to a stranger, and
-// a rejection is a count, not a line.
+// A line carries only what readReport made of the message: its figures
+// clamped, its words the server's own. A rejection is a count, not a line: it
+// is exactly what a stranger may send as often as they like.
 func (s *server) takeReport(gate *reportGate, member *Member, room *Room, data []byte, now time.Time) {
 	counted := s.hub.stats
-	kind, p := readReport(data)
-	switch kind {
+	r := readReport(data)
+	said := ""
+	switch r.kind {
 	case desyncReport:
 		if gate.desynced {
 			counted.reportRejected("early")
@@ -210,15 +343,28 @@ func (s *server) takeReport(gate *reportGate, member *Member, room *Room, data [
 		if room.noteDesync() {
 			counted.matchDesynced(room.kind())
 		}
+		said = "worlds parted"
+		if r.tick >= 0 {
+			said += fmt.Sprintf(" at tick %d", r.tick)
+		}
 	case paceReport:
 		if !gate.allowPace(now, s.reportInterval()) {
 			counted.reportRejected("early")
 			return
 		}
-		counted.paced(member.client.platform, p)
+		counted.paced(member.client.platform, r.pace)
+		said = r.pace.line()
+	case noteReport:
+		if !gate.notes.allow(now, s.noteInterval(), noteBurst) {
+			counted.reportRejected("early")
+			return
+		}
+		said = r.note.line()
 	default:
 		counted.reportRejected("malformed")
+		return
 	}
+	log.Printf("room %s, slot %d client: %s", room.Code, member.Slot, said)
 }
 
 // clientReports is what players' reports add up to.
@@ -239,8 +385,8 @@ var windowLabels = labelSet{
 	{"verdict", []string{"smooth", "network", "machine"}},
 }
 
-// Why a report was dropped: it came sooner than allowed, or it was neither of
-// the two shapes.
+// Why a report was dropped: it came sooner than allowed, or it was none of the
+// shapes readReport takes.
 var rejectionLabels = labelSet{{"why", []string{"early", "malformed"}}}
 
 // A window's speed as a share of full speed. Half speed is a game that is
@@ -302,9 +448,10 @@ func newClientReports(f families) clientReports {
 				"however many of its players report it, and only in a room that has held a pair.",
 			roomKindLabels),
 		rejected: f.counterVec("relay_client_reports_rejected_total",
-			"Reports from players that were dropped: early when a connection had used up its allowance "+
-				"(two at once, then one an interval) or reported a desync twice; "+
-				"malformed when it was neither of the two shapes.",
+			"Reports and notes from players that were dropped: early when a connection had used up "+
+				"its allowance (for reports two at once, then one an interval; for notes ten at once, "+
+				"then one every two seconds) or reported a desync twice; "+
+				"malformed when it was none of the shapes the server reads.",
 			rejectionLabels),
 	}
 }

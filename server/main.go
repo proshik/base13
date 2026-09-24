@@ -57,6 +57,11 @@ type hello struct {
 	// kept past it.
 	Platform string `json:"platform"`
 	Version  string `json:"version"`
+	// In a browser, its family and the system under it, as the client named
+	// them — never the user agent itself. Folded into closed sets in greet for
+	// the log line, and not kept past it.
+	Browser string `json:"browser"`
+	OS      string `json:"os"`
 }
 
 // The answer to the housekeeping packet. After it, silence: everything else
@@ -76,6 +81,12 @@ type welcome struct {
 	// reports only to a server whose welcome says this. A refusal seats nobody
 	// and leaves it out.
 	Reports bool `json:"reports,omitempty"`
+	// The server also reads the current report shapes and writes them to its
+	// log: a window with every figure of the client's own line, a desync with
+	// its tick, and the client's notes. A server from before them reads each as
+	// malformed, so a client sends them only when a welcome says this, and the
+	// older shapes otherwise.
+	Notes bool `json:"notes,omitempty"`
 }
 
 type server struct {
@@ -93,6 +104,8 @@ type server struct {
 	statsEvery time.Duration // how long a window of a stream's evenness lasts
 	// The least time between two pace reports taken from one connection.
 	reportEvery time.Duration
+	// The time a connection earns one note back in.
+	noteEvery time.Duration
 }
 
 // remember reports whether there was room for one more connection.
@@ -544,9 +557,12 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 
 	// Set on the goroutine that reads, the only one that ever calls it, and
 	// before the writer that pings has started, so no answer comes back to find
-	// it missing.
+	// it missing. The last round trip is kept for the window line, on the same
+	// goroutine that writes it.
+	var rtt time.Duration
 	conn.onRTT = func(took time.Duration) {
 		member.stats.observeRTT(member.client.platform, took)
+		rtt = took
 	}
 	go pump(conn, member, s.pingInterval())
 
@@ -583,9 +599,16 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 			for _, q := range room.Silent(member, end, every) {
 				quiet += fmt.Sprintf(", slot %d silent %v", q.slot, roundQuiet(q.took))
 			}
-			log.Printf("room %s, slot %d: %.0fs, %d packets, worst gap %v, then %d at once%s",
+			// The last round trip measured, not one of this window's: a ping goes
+			// every twenty seconds and a window is five, so most windows hold
+			// none. Left out until the first answer.
+			trip := ""
+			if rtt > 0 {
+				trip = fmt.Sprintf(", rtt %v", roundTrip(rtt))
+			}
+			log.Printf("room %s, slot %d: %.0fs, %d packets, worst gap %v, then %d at once%s%s",
 				room.Code, member.Slot, end.Sub(window).Seconds(),
-				flow.count(), flow.worstGap().Round(time.Millisecond), flow.atOnce(), quiet)
+				flow.count(), flow.worstGap().Round(time.Millisecond), flow.atOnce(), trip, quiet)
 			if flow.measured() {
 				s.hub.stats.observeWorstGap(flow.worstGap())
 			}
@@ -593,6 +616,15 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 		s.hub.stats.relayed(len(packet))
 		room.Broadcast(member, packet)
 	}
+}
+
+// roundTrip rounds a round trip for the log: to the millisecond, or to the
+// microsecond under one, where a trip on a local network lies.
+func roundTrip(d time.Duration) time.Duration {
+	if d >= time.Millisecond {
+		return d.Round(time.Millisecond)
+	}
+	return d.Round(time.Microsecond)
 }
 
 // roundQuiet rounds a silence for the log: whole seconds once it is past one.
@@ -674,12 +706,13 @@ func (s *server) greet(conn *Conn, r *http.Request) (*Room, *Member, error) {
 	if room.Public {
 		kind = "public"
 	}
+	came := member.client.describe(request.Browser, request.OS)
 	if request.Since > 0 {
-		log.Printf("room %s (%s): %s returned, sending %d records, %d in room",
-			room.Code, kind, slotName(member.Slot), len(tail), room.Occupants())
+		log.Printf("room %s (%s): %s returned, sending %d records, %d in room, client %s",
+			room.Code, kind, slotName(member.Slot), len(tail), room.Occupants(), came)
 	} else {
-		log.Printf("room %s (%s, game %s): %s joined, %d in room",
-			room.Code, kind, request.Game, slotName(member.Slot), room.Occupants())
+		log.Printf("room %s (%s, game %s): %s joined, %d in room, client %s",
+			room.Code, kind, request.Game, slotName(member.Slot), room.Occupants(), came)
 	}
 
 	answer := welcome{
@@ -690,6 +723,7 @@ func (s *server) greet(conn *Conn, r *http.Request) (*Room, *Member, error) {
 		Replay:  len(tail),
 		Players: room.Occupants(),
 		Reports: true,
+		Notes:   true,
 	}
 	body, _ := json.Marshal(answer)
 	if err := conn.WriteText(body); err != nil {

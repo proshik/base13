@@ -492,9 +492,9 @@ func TestAWholeNumberIsTakenHoweverItIsWritten(t *testing.T) {
 			pace{Speed: 200, Waits: 300, Delay: 64, FPS: 1000}},
 		{`{"report":{"speed":-1e20,"waits":0,"delay":6,"fps":60}}`, pace{Delay: 6, FPS: 60}},
 	} {
-		kind, got := readReport([]byte(c.body))
-		if kind != paceReport || got != c.want {
-			t.Errorf("%s read as kind %d %+v, expected a pace report %+v", c.body, kind, got, c.want)
+		r := readReport([]byte(c.body))
+		if r.kind != paceReport || r.pace != c.want {
+			t.Errorf("%s read as kind %d %+v, expected a pace report %+v", c.body, r.kind, r.pace, c.want)
 		}
 	}
 	for _, body := range []string{
@@ -504,8 +504,8 @@ func TestAWholeNumberIsTakenHoweverItIsWritten(t *testing.T) {
 		`{"report":{"speed":100,"waits":0,"delay":6,"fps":1e-1}}`,
 		`{"report":{"speed":1e400,"waits":0,"delay":6,"fps":60}}`,
 	} {
-		if kind, _ := readReport([]byte(body)); kind != malformedReport {
-			t.Errorf("%s read as kind %d, expected malformed", body, kind)
+		if r := readReport([]byte(body)); r.kind != malformedReport {
+			t.Errorf("%s read as kind %d, expected malformed", body, r.kind)
 		}
 	}
 }
@@ -649,62 +649,6 @@ func (b *lockedBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.buf.String()
-}
-
-func TestReportsNeverReachTheLog(t *testing.T) {
-	// The log is kept by whoever runs the server, for as long as they like, and a
-	// report is whatever a stranger chose to write. Nothing of one is written
-	// there: not a figure, not a word, not a rejected message as it was sent.
-	// Not parallel: it takes over the package's log for its duration.
-	captured := &lockedBuffer{}
-	kept := log.Writer()
-	log.SetOutput(captured)
-	defer log.SetOutput(kept)
-
-	s := &server{hub: NewHub(), reportEvery: time.Hour}
-	addr, stop := serve(t, s)
-	defer stop()
-	host, guest, _ := seatPair(t, addr)
-
-	const marker = "Qz7markerXv"
-	numbers := `{"report":{"speed":141421,"waits":271828,"delay":161803,"fps":314159}}`
-	for _, body := range []string{
-		numbers,
-		numbers,
-		numbers, // early
-		`{"desync":true}`,
-		`{"desync":true}`, // early
-		`{"report":{"speed":"` + marker + `","waits":0,"delay":4,"fps":60}}`,
-		marker,
-	} {
-		host.sendText(t, []byte(body))
-	}
-	packet := []byte{1, 0, 0, 0, 0, 31}
-	host.send(t, packet)
-	expectPacket(t, guest, packet)
-	expectSeries(t, s, map[string]float64{
-		`relay_client_windows_total{platform="macos",verdict="smooth"}`: 2,
-		`relay_client_reports_rejected_total{why="early"}`:              2,
-		`relay_client_reports_rejected_total{why="malformed"}`:          2,
-		`relay_desynced_matches_total{kind="code"}`:                     1,
-	})
-	// Both leave, and every line their connections log on the way out is written
-	// before the server lets go of the connections.
-	host.conn.Close()
-	guest.conn.Close()
-	eventually(t, func() bool { return metricValue(t, s, "relay_connections") == 0 })
-
-	logged := captured.String()
-	if !strings.Contains(logged, "joined") {
-		t.Fatalf("the log was not captured, the test proves nothing: %q", logged)
-	}
-	// Matched as written: a report's words are lowercase, and a room code in the
-	// log is uppercase, so a code cannot spell one of them by chance.
-	for _, word := range []string{marker, "141421", "271828", "161803", "314159", "report", "desync", "speed", "waits", "fps"} {
-		if strings.Contains(logged, word) {
-			t.Errorf("the log carries %q from a report:\n%s", word, logged)
-		}
-	}
 }
 
 // The delay a player reports is no longer a reading of the network. A client on
