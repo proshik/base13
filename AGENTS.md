@@ -425,7 +425,11 @@ Rakes we have already stepped on:
 - **Only the pace packet keeps the two sides level.** A side half a second ahead guesses
   at the very edge of the window for the whole match — measured: depth 11–12 every second
   and forty-two stops, against none for the partner. `TickPump` does not close that gap
-  by itself; `should_skip` lets one tick in twenty go until the leads match.
+  by itself; `should_skip` lets one tick in twenty go until the leads match. It weighs
+  our lead as the least of its last three readings: a late packet only reads high, and
+  weighed as it came, every burst on a ragged path let a tick go for nothing — up to nine
+  a stretch on 2026-09-24. The partner still hears the reading as it is: a least-of lags a
+  rising lead, and a partner back from a stand would be heard as behind.
 - **The macOS export must sign the app itself** (`codesign/codesign=1` in the preset).
   Without it the application carries away the *engine template's* signature, which stops
   matching once the game's bundle is assembled, and macOS says "damaged, move to the

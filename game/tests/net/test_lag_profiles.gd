@@ -25,6 +25,12 @@ extends GutTest
 ## twice that path, past what twelve ticks can cover, and there the game does stand
 ## — but both sides stand together and the worlds stay the same.
 ##
+## On the second line each side used to let about six ticks go in thirty seconds
+## for nothing: a late packet made its lead read high, and the pace rule took it
+## for running ahead. The rule weighs the least of its last three readings now,
+## and two go. Over five seeds of each: 57 still frames down to 12 there, 50 down
+## to none with one side's path standing 120 ms every five seconds.
+##
 ## A tab switch leaves the side that stood a window ahead of its partner. Shed one
 ## tick in twenty, that lead dropped nine frames and stepped back five ticks deep
 ## after second 13 on a local network; it is shed inside the stand now, and the
@@ -179,6 +185,9 @@ func test_a_path_to_the_relay_and_back_never_stands() -> void:
 	for i in 2:
 		assert_eq(peers[i].stops_from(1), 0, "side %d stood%s" % [i, _describe(peers)])
 		assert_lte(peers[i].deepest_from(1), 10, "side %d near the window%s" % [i, _describe(peers)])
+		# Nothing stood, so a still frame is a tick let go: jitter, not pace.
+		assert_lte(peers[i].stills_between(1000, SECONDS * 1000), 3,
+			"side %d let ticks go for late packets%s" % [i, _describe(peers)])
 
 ## Past the window nothing can be guessed, and the game stands — but in step.
 func test_a_path_longer_than_the_window_stands_and_plays_on() -> void:

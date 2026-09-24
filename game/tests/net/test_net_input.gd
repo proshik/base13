@@ -316,16 +316,37 @@ func test_without_word_from_the_partner_nothing_is_skipped() -> void:
 		assert_false(input.should_skip(t + 1))
 
 ## Our lead is our tick less theirs as their input shows it; theirs arrives in a
-## pace packet. Well ahead of them — let a tick go, but not two in a row.
+## pace packet. Steadily well ahead of them — let a tick go, but not two in a row.
 func test_running_ahead_of_the_partner_lets_a_tick_go() -> void:
-	for t in range(Rollback.START, 21):
-		input.handle_packet(Protocol.pack_input(t, 0))
 	for t in 41:
+		if t - 18 >= Rollback.START:
+			input.handle_packet(Protocol.pack_input(t - 18, 0))
 		input.note_tick(t)
 	input.handle_packet(Protocol.pack_pace(18, 0))
-	assert_true(input.should_skip(41), "22 ticks ahead of a partner who is not ahead of us")
+	assert_true(input.should_skip(41), "20 ticks ahead of a partner who is not ahead of us")
 	assert_false(input.should_skip(42), "two ticks let go one after another")
 	assert_true(input.should_skip(41 + NetInput.SKIP_SPACING))
+
+## A partner in step whose packets stall for a quarter of a second each second
+## and then arrive together, as on the Wi-Fi of 2026-09-24. While they stall our
+## lead reads high — "lead 7 against 1" — but it is the path, not the pace, and
+## letting a tick go for it dropped up to nine a stretch for nothing.
+func test_a_burst_of_late_packets_lets_no_tick_go() -> void:
+	var skipped := 0
+	var delivered := Rollback.START - 1
+	for t in 600:
+		var stalled := t % 60 >= 45 and t % 60 < 59
+		if not stalled:
+			while delivered < t + 1:
+				delivered += 1
+				if delivered >= Rollback.START:
+					input.handle_packet(Protocol.pack_input(delivered, 0))
+		if input.should_skip(t):
+			skipped += 1
+		input.note_tick(t)
+		if t % NetInput.PACE_EVERY == 0:
+			input.handle_packet(Protocol.pack_pace(t, 1))
+	assert_eq(skipped, 0, "ticks were let go for late packets")
 
 func test_being_as_far_ahead_as_the_partner_is_in_step() -> void:
 	for t in range(Rollback.START, 21):

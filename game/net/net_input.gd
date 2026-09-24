@@ -82,6 +82,8 @@ var _last_skip := -SKIP_SPACING
 var _calm_lead := 0
 var _knows_calm_lead := false
 var _calm_samples: Array[int] = []
+## Our lead at the last few pace readings, oldest first. See `_steady_lead`.
+var _lead_samples: Array[int] = []
 var _calm_edge := -1
 ## Set when a stand past FROZEN_MS ends, until the lead it left is shed.
 var _recovering := false
@@ -296,6 +298,9 @@ func note_tick(tick: int) -> void:
 	_last_tick = tick
 	_report.ticks += 1
 	if tick % PACE_EVERY == 0 and _partner_heard():
+		_lead_samples.append(_lead())
+		if _lead_samples.size() > CALM_READINGS:
+			_lead_samples.remove_at(0)
 		_link.send(Protocol.pack_pace(tick, _lead()))
 		_note_calm_lead()
 	_rollback.forget_before(tick - Rollback.KEEP)
@@ -317,6 +322,20 @@ func note_rollback(depth: int, usec: int) -> void:
 ## the two leads are held against each other and not against zero.
 func _lead() -> int:
 	return _last_tick - (_rollback.remote_edge() - Rollback.INPUT_DELAY)
+
+## Our lead as the pace rule weighs it: the least of the last few readings. A
+## late packet only ever makes the lead read high, and on a ragged path it did
+## every second — "lead 7 against 1" on a side in step, which let a tick go each
+## time for nothing, up to nine a stretch. A side truly ahead reads high every
+## time and still lets ticks go.
+##
+## Ours only. The partner hears the reading as it is: the least of a few lags a
+## lead that is rising, and a partner back from a stand, whose lead climbs from
+## far below, would have been heard as behind for half a second and a tick let
+## go for it. Their late packets only make their word read high, and that only
+## makes us let go less.
+func _steady_lead() -> int:
+	return _lead_samples.min() if not _lead_samples.is_empty() else _lead()
 
 func _partner_heard() -> bool:
 	return _rollback.remote_edge() >= Rollback.START
@@ -360,7 +379,7 @@ func should_skip(tick: int) -> bool:
 		return false
 	if tick - _last_skip < SKIP_SPACING:
 		return false
-	if _lead() - _partner_lead <= LEAD_TOLERATED:
+	if _steady_lead() - _partner_lead <= LEAD_TOLERATED:
 		return false
 	_last_skip = tick
 	_report.skips += 1
