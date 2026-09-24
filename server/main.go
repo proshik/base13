@@ -576,7 +576,9 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 		}
 		flow.note(now)
 		member.heard(now)
-		if now.Sub(window) >= every {
+		// Held open while what ended the worst gap is still coming in: at most
+		// a burst more, and bounded by mostTogether.
+		if now.Sub(window) >= every && !flow.settling() {
 			// A partner quiet for longer than a window while this side sends is
 			// who this side is waiting for; their own line never comes, since a
 			// line is written only on a packet.
@@ -584,9 +586,9 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 			for _, q := range room.Silent(member, now, every) {
 				quiet += fmt.Sprintf(", slot %d silent %v", q.slot, roundQuiet(q.took))
 			}
-			log.Printf("room %s, slot %d: %.0fs, %d packets, worst gap %v%s",
+			log.Printf("room %s, slot %d: %.0fs, %d packets, worst gap %v, then %d at once%s",
 				room.Code, member.Slot, now.Sub(window).Seconds(),
-				flow.count(), flow.worstGap().Round(time.Millisecond), quiet)
+				flow.count(), flow.worstGap().Round(time.Millisecond), flow.atOnce(), quiet)
 			if flow.measured() {
 				s.hub.stats.observeWorstGap(flow.worstGap())
 			}

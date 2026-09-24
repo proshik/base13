@@ -749,6 +749,73 @@ func TestAGapAcrossAWindowBoundaryBelongsToTheNextWindow(t *testing.T) {
 	}
 }
 
+func TestArrivalsCountWhatCameAtOnceWithTheWorstGap(t *testing.T) {
+	// A stall in a player's stream has two causes the gap alone cannot tell
+	// apart. Their machine stood still and sent nothing, and then caught up a
+	// few ticks a frame; or their network held what they kept sending, and then
+	// let all of it go together. What came at once with the end of the stall
+	// says which.
+	base := time.Unix(0, 0)
+	at := func(ms float64) time.Time { return base.Add(time.Duration(ms * float64(time.Millisecond))) }
+
+	var machine arrivals
+	machine.note(at(0))
+	machine.note(at(16))
+	machine.note(at(216)) // the stall ends with a frame of five ticks
+	for i := 1; i < 5; i++ {
+		machine.note(at(216 + 0.2*float64(i)))
+	}
+	if !machine.settling() {
+		t.Fatal("the packets that ended the stall are still coming, yet the window could close")
+	}
+	machine.note(at(233)) // the next frame
+	if machine.settling() {
+		t.Fatal("a frame later the stall is over, yet the window stays open")
+	}
+	machine.note(at(233.2))
+	if got := machine.atOnce(); got != 5 {
+		t.Fatalf("a machine catching up a frame of five sent %d at once with the stall's end", got)
+	}
+
+	var network arrivals
+	network.note(at(0))
+	network.note(at(16))
+	network.note(at(26)) // a smaller gap first: its burst is not the one reported
+	network.note(at(26.1))
+	network.note(at(226)) // held for two hundred milliseconds
+	for i := 1; i < 13; i++ {
+		network.note(at(226 + 0.1*float64(i)))
+	}
+	network.note(at(240))
+	if got := network.atOnce(); got != 13 {
+		t.Fatalf("a network letting go of thirteen held packets came out as %d at once", got)
+	}
+
+	network.forget()
+	if network.atOnce() != 0 || network.settling() {
+		t.Fatalf("a new window starts with %d at once, settling %v", network.atOnce(), network.settling())
+	}
+}
+
+func TestAStreamSentAtOnceForGoodDoesNotHoldAWindowOpen(t *testing.T) {
+	// The window closes once what ended its worst gap has come in. A stranger
+	// sending back to back without a pause must not keep it open, and with it
+	// the log line and the gap histogram, for good.
+	base := time.Unix(0, 0)
+	var flow arrivals
+	flow.note(base)
+	flow.note(base.Add(300 * time.Millisecond))
+	for i := 1; i <= 1000 && flow.settling(); i++ {
+		flow.note(base.Add(300*time.Millisecond + time.Duration(i)*time.Microsecond))
+	}
+	if flow.settling() {
+		t.Fatalf("a thousand packets back to back kept the window open")
+	}
+	if got := flow.atOnce(); got > 100 {
+		t.Fatalf("the count of packets at once ran to %d", got)
+	}
+}
+
 func TestServesOverTLSWhenGivenACertificate(t *testing.T) {
 	// Without HTTPS the web build does not start at all: Godot requires a
 	// secure context. So the server must be able to serve over TLS itself —
@@ -1643,6 +1710,11 @@ func TestWorstGapIsObservedEachWindow(t *testing.T) {
 	// window after the last one, so it closes a window wherever the boundaries
 	// fell, and that window holds the whole stall.
 	time.Sleep(200 * time.Millisecond)
+	host.send(t, packet)
+	guest.receive(t)
+	// What ended the stall may still be coming in, and the window is held open
+	// for it: it closes on the first packet that did not come with it.
+	time.Sleep(10 * time.Millisecond)
 	host.send(t, packet)
 	guest.receive(t)
 	expectSeries(t, s, map[string]float64{

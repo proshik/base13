@@ -769,3 +769,43 @@ func TestTheLogNamesASilentPartner(t *testing.T) {
 		t.Fatalf("the host leaving did not say how long they had been silent: %q", captured.String())
 	}
 }
+
+func TestTheWindowLineSaysWhatCameAtOnceAfterTheWorstGap(t *testing.T) {
+	// 2026-09-24: one player's stream stood for 100-460 ms nearly every window at
+	// a normal packet count, and the log could not say whether their machine or
+	// their network stood. The line now says how many packets came at once with
+	// the end of the worst gap: a few for a machine catching up, many for a
+	// network letting go of what it held.
+	// Not parallel: it takes over the package's log for its duration.
+	captured := &lockedBuffer{}
+	kept := log.Writer()
+	log.SetOutput(captured)
+	defer log.SetOutput(kept)
+
+	s := &server{hub: NewHub(), statsEvery: 50 * time.Millisecond}
+	addr, stop := serve(t, s)
+	defer stop()
+	host, guest, _ := seatPair(t, addr)
+	packet := []byte{1, 0, 0, 0, 0, 31}
+	host.send(t, packet)
+	expectPacket(t, guest, packet)
+	// Past a window, nine packets in one write: what a network lets go of.
+	time.Sleep(100 * time.Millisecond)
+	var held []byte
+	for i := 0; i < 9; i++ {
+		held = append(held, clientFrame(opBinary, packet)...)
+	}
+	if _, err := host.conn.Write(held); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 9; i++ {
+		expectPacket(t, guest, packet)
+	}
+	time.Sleep(20 * time.Millisecond)
+	host.send(t, packet)
+	expectPacket(t, guest, packet)
+	eventually(t, func() bool { return strings.Contains(captured.String(), "slot 0: ") })
+	if !regexp.MustCompile(`slot 0: \d+s, 1[01] packets, worst gap \d+ms, then 9 at once`).MatchString(captured.String()) {
+		t.Fatalf("the window line does not say what came at once after the worst gap: %q", captured.String())
+	}
+}
