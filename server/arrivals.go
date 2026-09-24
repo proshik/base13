@@ -65,11 +65,12 @@ func (a *arrivals) count() int { return a.packets }
 func (a *arrivals) worstGap() time.Duration { return a.worst }
 
 // atOnce is how many packets came together with the end of the worst gap. It
-// tells the two causes of a stall apart. A machine that stood sent nothing
-// meanwhile and catches up a few ticks a frame, so a handful come at once. A
-// network that stood held what the sender went on sending and lets it all go
-// together, so a stall's worth comes at once: a dozen for two hundred
-// milliseconds. A client that stood a second for its partner also sends its
+// points at which of two causes stood a stream. A network that stood held what
+// the sender went on sending and lets it all go together, so a stall's worth
+// comes at once: a dozen for two hundred milliseconds. A machine that stood sent
+// nothing meanwhile and catches up a few ticks a frame, so fewer come at once —
+// unless its browser runs the frames it missed back to back. A small count is
+// the machine; a large one only points at the network. A client that stood a second for its partner also sends its
 // recent input again in one go, so a gap that long ending in two dozen is that.
 func (a *arrivals) atOnce() int { return a.together }
 

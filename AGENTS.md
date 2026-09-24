@@ -342,10 +342,11 @@ Rakes we have already stepped on:
   not tell a machine standing still from a network holding packets: both send the same
   number over five seconds, and the lag profiles and a local browser pair show the client
   itself never makes such a gap (17–19 ms at the worst). The window line now ends with
-  `then N at once` — the packets that came together with the end of the worst gap: under
-  ten when the machine stood and catches up five ticks a frame (8–9 measured for 250 ms),
-  a stall's worth when the network let go of what it held (16–19 for 250 ms) — and the
-  `[net]` line with the `longest frame`. A window whose time is up waits for that burst
+  `then N at once` — the packets that came together with the end of the worst gap: a
+  stall's worth when the network let go of what it held (15–19 for 250 ms), fewer when
+  the machine stood and caught up five ticks a frame (8–9, but 12–13 in another run: a
+  browser may run its missed frames back to back, and then the catch-up comes at once
+  too) — and the `[net]` line with the `longest frame`, which is the one that settles it. A window whose time is up waits for that burst
   if the packet that closed it ended its worst gap — or a stall ending past its edge would
   always read as the machine's — but only while the burst keeps coming, `mostHeldOpen` at
   most. The first packet that does not come with it opens the next window before it is

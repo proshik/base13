@@ -453,12 +453,15 @@ room J3LADB, slot 0: 5s, 330 packets, worst gap 214ms, then 14 at once
 ```
 
 `then N at once` counts the packets that came together, within 4 ms, with the end of the
-worst gap. A machine that stood sent nothing while it stood and catches up five ticks a
-frame, so under ten come at once, however long the stall. A network that stood held what
-the player went on sending and lets it all go together: about one for every fifteen
-milliseconds of the gap. On one machine, with a stall of 250 ms made each way, a busy
-page gave `then 8 at once` and a proxy holding the bytes `then 18 at once`. That player's
-own `[net]` line answers the same through `longest frame`.
+worst gap. A network that stood held what the player went on sending and lets it all go
+together: about one for every fifteen milliseconds of the gap. A machine that stood sent
+nothing while it stood and catches up five ticks a frame, so when the browser draws its
+next frames at the display's pace, under ten come at once. But a browser may run the
+frames it missed back to back, and then a machine's catch-up comes at once as well. On one
+machine, with a stall of 250 ms made each way, a proxy holding the bytes gave 15 to 18 at
+once, and a busy page gave 8 in one run and 12 to 13 in another. So a count well under a stall's worth means the machine, and a large one is only a
+hint. The answer is in that player's own `[net]` line: `longest frame` near the gap means
+the machine stood, a frame of a tick means the network.
 
 One burst is neither. A side that stood a second waiting for its partner sends its recent
 input again, two dozen packets in one frame, so `worst gap 1s, then 27 at once` is a side
