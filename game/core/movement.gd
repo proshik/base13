@@ -10,6 +10,9 @@ static func snap_to_cell(v: int) -> int:
 static func overlaps(a: Vector2i, sa: int, b: Vector2i, sb: int) -> bool:
 	return a.x < b.x + sb and b.x < a.x + sa and a.y < b.y + sb and b.y < a.y + sa
 
+## Whether the tank may move from where it stands to pos. Where it stands is
+## read from tank.pos, so ask before moving it: asked after, the move would
+## look like no move at all and pass on top of any tank (see _parting).
 static func can_occupy(state: WorldState, tank: Entities.Tank, pos: Vector2i) -> bool:
 	if state.terrain.rect_blocks_tank(pos, Consts.TANK):
 		return false
@@ -42,8 +45,8 @@ static func turn(state: WorldState, tank: Entities.Tank, new_dir: int) -> void:
 		snapped.x = snap_to_cell(snapped.x)
 	else:
 		snapped.y = snap_to_cell(snapped.y)
-	# The snap can push a tank into a wall — then it is not taken, or the tank
-	# would get stuck.
+	# The snap can push a tank onto a neighbour — then it is not taken, or the
+	# two would stick together.
 	if can_occupy(state, tank, snapped):
 		tank.pos = snapped
 
