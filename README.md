@@ -164,7 +164,7 @@ terminal, and in the browser in the developer console. `L` puts the same figures
 screen:
 
 ```
-[net] 300 ticks in 5000 ms (norm 5000), speed 100%, stops 0 (longest 0 ms), frozen 0 (longest 0 ms), rollbacks 8 (deepest 8), resim 3 ms, skips 1, lead 9 against 6
+[net] 300 ticks in 5000 ms (norm 5000), speed 100%, stops 0 (longest 0 ms), frozen 0 (longest 0 ms), rollbacks 8 (deepest 8), resim 3 ms, skips 1, lead 9 against 6, longest frame 18 ms
 ```
 
 - `stops` — times the game stood past those 200 ms for a moment, up to 150 ms: a path a
@@ -177,6 +177,9 @@ screen:
 - `skips` and `lead` — a side that got ahead of its partner lets one tick in twenty go
   until the two are level. When the partner is back from a stand, the lead the stand left
   is let go at once instead, before the picture moves again.
+- `longest frame` — the longest this machine took over one frame. Far past a tick, the
+  machine stood still: nothing was sent meanwhile, and the partner's screen saw the same
+  gap a network would have made.
 
 `frozen` means the partner went quiet; `stops` that keep coming mean the network. A speed
 noticeably below a hundred with neither and a large `resim` means the machine cannot keep
@@ -441,6 +444,21 @@ apart with the same rule as the `[net]` lines:
   its delay from five to sixteen instead of guessing. Both lines under two mean everyone
   is on the current build.
 - **Forward delay high** — the server itself. Check the Go scheduler latency and CPU first.
+
+The log tells a ragged stream's two causes apart, which the panels cannot. Every five
+seconds a line per player:
+
+```
+room J3LADB, slot 0: 5s, 330 packets, worst gap 214ms, then 14 at once
+```
+
+`then N at once` counts the packets that came together, within 4 ms, with the end of the
+worst gap. A machine that stood sent nothing while it stood and catches up five ticks a
+frame, so under ten come at once, however long the stall. A network that stood held what
+the player went on sending and lets it all go together: about one for every fifteen
+milliseconds of the gap. On one machine, with a stall of 250 ms made each way, a busy
+page gave `then 8 at once` and a proxy holding the bytes `then 18 at once`. That player's
+own `[net]` line answers the same through `longest frame`.
 
 The `machine` share includes frozen stands. A window in which the game stood still — a
 partner's hidden tab, a relay drop and return, the player's own hidden tab — is reported like

@@ -328,8 +328,8 @@ Rakes we have already stepped on:
 - **"It lags" without numbers is unverifiable.** Every five seconds `NetInput` prints a
   `[net]` line: real time for three hundred ticks, the speed against the clock, `stops`
   (short stands past the window), `frozen` (stands past `FROZEN_MS`), `rollbacks` and
-  `deepest`, `resim` (what the stepping back cost this machine), `skips` and the two
-  sides' leads. `frozen` means the partner went quiet; stops that keep coming mean the
+  `deepest`, `resim` (what the stepping back cost this machine), `skips`, the two
+  sides' leads and the `longest frame`. `frozen` means the partner went quiet; stops that keep coming mean the
   network; a large `resim` with the speed below a hundred means the machine. `L` puts the last second's numbers on
   screen. Visible in the terminal on desktop and in the developer console in the browser.
   Beside it, one `[net]` line an event: a level begins (with the slot), ends (the end
@@ -337,6 +337,22 @@ Rakes we have already stepped on:
   the first two), is done; and the first time a stand sends input again, with why. On the
   server, the window line of a side still sending names a partner silent past a window,
   and a side leaving says how long it had been silent.
+- **A gap in a player's stream does not say whose fault it is.** On 2026-09-24 one side's
+  stream stood 100–460 ms nearly every window at a normal packet count, and the log could
+  not tell a machine standing still from a network holding packets: both send the same
+  number over five seconds, and the lag profiles and a local browser pair show the client
+  itself never makes such a gap (17–19 ms at the worst). The window line now ends with
+  `then N at once` — the packets that came together with the end of the worst gap: under
+  ten when the machine stood and catches up five ticks a frame (8–9 measured for 250 ms),
+  a stall's worth when the network let go of what it held (16–19 for 250 ms) — and the
+  `[net]` line with the `longest frame`. The window is held open until that burst is in,
+  or a stall ending right on its edge would always read as the machine's. The side whose
+  own network stood also steps back deep, nine to twelve ticks: it went on guessing
+  through the stall, where a machine that stood guessed nothing.
+- **The tally between levels is waited out in a network game.** Each side shows its own,
+  and a key swept away only the side's that pressed it. That side began the next level up
+  to five and a half seconds early and stood frozen on its twelfth tick — `tick 17 stood,
+  confirmed through 4` in its log, then `frozen` of 2.5–5 s — until the partner came.
 - **Restoring a world must write into the same `WorldState`.** `Combat`, `EnemyAi`,
   `Bonuses` and `Spawner` hold a reference to it; a restore that swapped the object left
   them computing the world that was thrown away. `SimSnapshot.copy_world` writes into the
