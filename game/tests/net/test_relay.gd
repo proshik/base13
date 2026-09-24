@@ -148,7 +148,7 @@ const FULL_PACE := {"speed": 97, "waits": 2, "delay": 2, "fps": 60, "frozen": 1,
 	"frozen_longest_ms": 2400, "stops_longest_ms": 120, "rollbacks": 40, "deepest": 9,
 	"resim_ms": 12, "skips": 3, "lead": 4, "partner_lead": -1, "longest_frame_ms": 250}
 
-## A server that takes reports but not notes — 0.6.4 — reads a report with more
+## A server that takes reports but not notes — up to 0.6.5 — reads a report with more
 ## than its four figures, a desync with a tick and any note as malformed. It is
 ## told what it reads, as before; only a server whose welcome announced notes
 ## hears the rest, and the log that server keeps is where they go.

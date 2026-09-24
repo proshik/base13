@@ -1677,7 +1677,7 @@
       "id": 31,
       "type": "timeseries",
       "title": "Rejected reports",
-      "description": "Players' reports dropped per five minutes. early: past the allowance (two at once, then one every four seconds) or a second desync; an honest client catching up can be early. malformed: neither of the two shapes, which is a client version writing the wrong shape or a script.",
+      "description": "Players' reports and notes dropped per five minutes. early: past an allowance — for pace reports two at once, then one every four seconds; for notes ten at once, then one every two seconds — or a second desync; an honest client catching up, or a player switching tabs over and over, can be early. malformed: none of the shapes the server reads, which is a client version writing the wrong shape or a script.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"

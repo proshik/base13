@@ -66,8 +66,9 @@ var _client := {}
 var _reports := false
 ## Whether the last welcome said the server also takes the current shapes: the
 ## report with every figure of the `[net]` line, a desync with its tick, and
-## notes. 0.6.4 takes reports but reads each of these as malformed, so it is
-## told the older shapes. Taken again from every welcome, like `_reports`.
+## notes. A server up to 0.6.5 takes reports but reads each of these as
+## malformed, so it is told the older shapes. Taken again from every welcome,
+## like `_reports`.
 var _notes := false
 
 ## now_provider is a seam for tests: otherwise the retry deadlines would have to

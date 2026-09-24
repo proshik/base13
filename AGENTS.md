@@ -356,8 +356,8 @@ Rakes we have already stepped on:
   never the user agent. So a complaint is read from one log by the room's code. Nothing is
   logged as a stranger wrote it: figures are whole numbers clamped to their bounds, words
   come from the server's closed sets, and a rejected message is a count, not a line. The
-  server calls a level a stage — it knows no game. A 0.6.4 server reads each of these
-  shapes as malformed, so a client sends it the older ones. About forty-eight lines a
+  server calls a level a stage — it knows no game. A server from 0.6.5 or before reads
+  each of these shapes as malformed, so a client sends it the older ones. About forty-eight lines a
   minute a room in play, twice the window lines alone.
 - **A hidden tab has no next frame.** An engine notification about the tab reaches the
   game on its next frame, and a hidden tab gets none until it is shown: "hidden" would
