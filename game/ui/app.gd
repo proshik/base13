@@ -68,9 +68,18 @@ func _run_selftest() -> void:
 	# opening developer tools.
 	var banner: Banner = Banner.new()
 	add_child(banner)
-	# Digits and capital letters only: the atlas font has nothing else.
-	banner.show_text("SELFTEST %s %d TICK %d SAVE %d RESIM %d" % [
-		"OK" if matched else "FAIL", actual, cost["tick_us"], cost["save_us"], cost["resim_us"]])
+	banner.show_text("\n".join(selftest_lines(matched, actual, cost["tick_us"],
+		cost["save_us"], cost["resim_us"])))
+
+## The result as the screen shows it. Two lines: on one it ran past the edge of the
+## picture and cut off RESIM, which on a phone, with no console, left nothing to read
+## it from. Digits and capital letters only: the atlas font has nothing else.
+static func selftest_lines(matched: bool, checksum: int, tick_us: int, save_us: int,
+		resim_us: int) -> Array[String]:
+	return [
+		"SELFTEST %s %d" % ["OK" if matched else "FAIL", checksum],
+		"TICK %d SAVE %d RESIM %d" % [tick_us, save_us, resim_us],
+	] as Array[String]
 
 ## The icon is also set at runtime: the project setting is enough for a built
 ## application, but when running from the editor the engine's logo would

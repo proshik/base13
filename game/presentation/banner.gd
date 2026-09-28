@@ -24,6 +24,10 @@ func hide_banner() -> void:
 
 func _draw() -> void:
 	draw_rect(Rect2(Vector2.ZERO, SCREEN), BACKGROUND)
-	var width := TextPainter.width_of(_text)
-	var at := Vector2i((int(SCREEN.x) - width) / 2, int(SCREEN.y) / 2 - TextPainter.GLYPH_PX)
-	TextPainter.draw_line(self, _font, _text, at)
+	# A line break starts a new line, each centred; the block stays in the middle.
+	var lines := _text.split("\n")
+	var top := int(SCREEN.y) / 2 - TextPainter.GLYPH_PX * lines.size()
+	for i in lines.size():
+		var width := TextPainter.width_of(lines[i])
+		var at := Vector2i((int(SCREEN.x) - width) / 2, top + i * TextPainter.GLYPH_PX * 2)
+		TextPainter.draw_line(self, _font, lines[i], at)
