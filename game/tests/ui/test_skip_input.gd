@@ -48,3 +48,19 @@ func test_reserved_keys_are_matched_by_position_not_symbol() -> void:
 
 func test_letter_key_in_another_layout_still_skips() -> void:
 	assert_true(SkipInput.is_skip(_key(KEY_W, true, false, KEY_SEMICOLON)))
+
+func _action(name: StringName, pressed := true) -> InputEventAction:
+	var e := InputEventAction.new()
+	e.action = name
+	e.pressed = pressed
+	return e
+
+func test_screen_buttons_skip() -> void:
+	# A phone has no keys: without this the tally waits out its timer.
+	assert_true(SkipInput.is_skip(_action(&"touch_fire")))
+	assert_true(SkipInput.is_skip(_action(&"touch_start")))
+	assert_false(SkipInput.is_skip(_action(&"touch_fire", false)))
+
+func test_the_stick_does_not_skip() -> void:
+	# A thumb resting on the stick through the tally must not sweep it away.
+	assert_false(SkipInput.is_skip(_action(&"touch_up")))
