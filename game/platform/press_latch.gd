@@ -38,6 +38,8 @@ static func note(event: InputEvent, open := true, pads: Variant = null) -> void:
 		return
 	for i in _seen.size():
 		_seen[i] |= Keyboard.pressed_bits(event, i)
+	# The screen is player one's: a phone has one pair of thumbs on it.
+	_seen[0] |= Touch.pressed_bits(event)
 	if not (event is InputEventJoypadButton or motion != null):
 		return
 	var connected: Array = Input.get_connected_joypads() if pads == null else pads

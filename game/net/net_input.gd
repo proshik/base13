@@ -176,7 +176,7 @@ func _read_bits(now: int) -> int:
 	if _bits_provider.is_valid():
 		held = _bits_provider.call(now)
 	else:
-		held = Keyboard.bits(0) | Gamepad.bits(0)
+		held = Keyboard.bits(0) | Gamepad.bits(0) | Touch.bits()
 	return held | PressLatch.take(0)
 
 func can_predict(tick: int) -> bool:

@@ -23,6 +23,49 @@ window/stretch/aspect="keep"
 window/stretch/scale_mode="integer"
 window/dpi/allow_hidpi=true
 
+[input]
+
+touch_up={
+"deadzone": 0.2,
+"events": []
+}
+touch_down={
+"deadzone": 0.2,
+"events": []
+}
+touch_left={
+"deadzone": 0.2,
+"events": []
+}
+touch_right={
+"deadzone": 0.2,
+"events": []
+}
+touch_fire={
+"deadzone": 0.2,
+"events": []
+}
+touch_start={
+"deadzone": 0.2,
+"events": []
+}
+touch_stick_left={
+"deadzone": 0.0,
+"events": []
+}
+touch_stick_right={
+"deadzone": 0.0,
+"events": []
+}
+touch_stick_up={
+"deadzone": 0.0,
+"events": []
+}
+touch_stick_down={
+"deadzone": 0.0,
+"events": []
+}
+
 [rendering]
 renderer/rendering_method="gl_compatibility"
 textures/canvas_textures/default_texture_filter=0
