@@ -35,6 +35,7 @@ var _timer := 0.0
 var _moving := false
 var _paused := false
 var _leaving := false   ## the network's answer to Esc: a question, not a pause
+var _choice := 0   ## on the pause or the leave question: 0 resume, 1 quit
 var _status := ""
 var _partner_missing := 0.0
 var _input: InputSource = LocalInput.new()
@@ -99,20 +100,32 @@ func _begin_level() -> void:
 	_timer = INTRO_SECONDS
 
 func _unhandled_input(event: InputEvent) -> void:
-	if event is InputEventKey and event.pressed and not event.echo \
-			and event.physical_keycode == KEY_ESCAPE:
+	var key := event as InputEventKey
+	if key != null and key.pressed and not key.echo:
+		if key.physical_keycode == KEY_Q and (_paused or _leaving):
+			_quit_to_menu()
+			return
+		if key.physical_keycode == KEY_L:
+			# Network numbers right on the screen: a screenshot is easier than digging
+			# them out of the developer console on somebody else's machine.
+			_stats.visible = not _stats.visible
+			return
+	var act := UiInput.of(event)
+	if act == UiInput.Act.BACK or act == UiInput.Act.START:
 		_on_escape()
-	elif event is InputEventKey and event.pressed and not event.echo \
-			and event.physical_keycode == KEY_Q and (_paused or _leaving):
-		_quit_to_menu()
-	elif event is InputEventKey and event.pressed and not event.echo \
-			and event.physical_keycode == KEY_L:
-		# Network numbers right on the screen: a screenshot is easier than digging
-		# them out of the developer console on somebody else's machine.
-		_stats.visible = not _stats.visible
-	elif event is InputEventJoypadButton and event.pressed \
-			and event.button_index == JOY_BUTTON_START:
-		_on_escape()
+		return
+	# In play the arrows and fire belong to the tank; only a question takes them.
+	if not (_paused or _leaving):
+		return
+	match act:
+		UiInput.Act.UP, UiInput.Act.DOWN:
+			_choice = 1 - _choice
+			_pause.set_choice(_choice)
+		UiInput.Act.CONFIRM:
+			if _choice == 1:
+				_quit_to_menu()
+			else:
+				_on_escape()
 
 ## A hidden browser tab stops running the loop but not the audio: the looped hum
 ## would go on sounding out of a window that has stopped drawing anything, and
@@ -139,10 +152,12 @@ func _on_escape() -> void:
 		_toggle_pause()
 		return
 	_leaving = not _leaving
+	_choice = 0
 	_pause.set_shown(_leaving, PauseOverlay.Kind.LEAVE)
 
 func _toggle_pause() -> void:
 	_paused = not _paused
+	_choice = 0
 	_pause.set_shown(_paused)
 	# The engine falls silent while paused: a continuous hum over a stopped game
 	# sounds like a hang.
