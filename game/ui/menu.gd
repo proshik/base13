@@ -10,6 +10,8 @@ signal finished(outcome: int)
 
 const SCREEN := Vector2(256, 240)
 const ITEMS := ["1 PLAYER", "2 PLAYERS", "NETWORK"]
+## A phone has one pair of thumbs on one screen: two players there would need two.
+const TOUCH_ITEMS := ["1 PLAYER", "NETWORK"]
 const FIRST_Y := 112
 const STEP_Y := 24
 const TEXT_X := 96
@@ -25,6 +27,8 @@ var _sprites: Texture2D = preload("res://assets/sprites.png")
 var _best := 0
 var _choice := 0
 var _left := false
+## Set once, from the machine; a field so that a test can say "phone".
+var touch := TouchDevice.present()
 
 func _ready() -> void:
 	texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
@@ -34,24 +38,16 @@ func configure(_campaign, _players: int, best: int) -> void:
 	queue_redraw()
 
 func _unhandled_input(event: InputEvent) -> void:
-	if event is InputEventJoypadButton and event.pressed:
-		match event.button_index:
-			JOY_BUTTON_DPAD_UP:
-				_move(-1)
-			JOY_BUTTON_DPAD_DOWN:
-				_move(1)
-			JOY_BUTTON_A, JOY_BUTTON_START:
-				_confirm()
-		return
-	if not (event is InputEventKey and event.pressed and not event.echo):
-		return
-	match event.physical_keycode:
-		KEY_UP, KEY_W:
+	match UiInput.of(event):
+		UiInput.Act.UP:
 			_move(-1)
-		KEY_DOWN, KEY_S:
+		UiInput.Act.DOWN:
 			_move(1)
-		KEY_ENTER, KEY_SPACE:
+		UiInput.Act.CONFIRM, UiInput.Act.START:
 			_confirm()
+
+func items() -> Array:
+	return TOUCH_ITEMS if touch else ITEMS
 
 ## A latch: Enter and a gamepad button can arrive in the same frame while the
 ## screen changes only later — the second confirmation would land on the game
@@ -64,24 +60,26 @@ func _confirm() -> void:
 		else ScreenFlow.Outcome.CONTINUE)
 
 func _is_network() -> bool:
-	return _choice == ITEMS.size() - 1
+	return items()[_choice] == "NETWORK"
 
 ## How many players were chosen. A separate question rather than mixed into the
 ## outcome: the network item once returned 4, the root read that as "five
 ## players" and went straight into the game, past the network screen.
 func players() -> int:
-	return 1 if _is_network() else _choice + 1
+	return 2 if items()[_choice] == "2 PLAYERS" else 1
 
 func _move(step: int) -> void:
-	_choice = (_choice + ITEMS.size() + step) % ITEMS.size()
+	var count := items().size()
+	_choice = (_choice + count + step) % count
 	queue_redraw()
 
 func _draw() -> void:
 	draw_rect(Rect2(Vector2.ZERO, SCREEN), Color(0, 0, 0))
 	TextPainter.draw_centred(self, _font, "BASE 13", 56)
 	TextPainter.draw_centred(self, _font, "HI %d" % _best, 80)
-	for i in ITEMS.size():
-		TextPainter.draw_line(self, _font, ITEMS[i], Vector2i(TEXT_X, FIRST_Y + i * STEP_Y))
+	var shown := items()
+	for i in shown.size():
+		TextPainter.draw_line(self, _font, shown[i], Vector2i(TEXT_X, FIRST_Y + i * STEP_Y))
 	_draw_cursor()
 	_draw_legend()
 
@@ -98,6 +96,9 @@ func _draw_legend() -> void:
 ## step with the layouts unnoticed — three menu items against two layouts, and
 ## the third line came out empty with nothing but a player number.
 func legend_rows() -> Array[String]:
+	if touch:
+		# The keys are not there to name.
+		return [] as Array[String]
 	var rows: Array[String] = []
 	for i in Keyboard.LAYOUTS.size():
 		var keys := Keyboard.describe(i)
