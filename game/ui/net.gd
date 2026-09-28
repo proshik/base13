@@ -71,6 +71,12 @@ var _via_room := false
 var _via_quick := false
 var _waited := 0.0
 var _left := false
+var _field: CodeField = null
+## Whether the page's own field holds the code: the keys the engine hears are then
+## the same letters a second time.
+var _field_open := false
+## What the last share came to: "copied" puts LINK COPIED on screen.
+var _shared := ""
 
 func _ready() -> void:
 	texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
@@ -99,7 +105,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		Mode.CHOOSE:
 			_choose(act)
 		Mode.CODE_TYPING:
-			if typed:
+			if typed and not _field_open:
 				_type_code(key)
 			elif act == UiInput.Act.CONFIRM and _typed.length() == CODE_LEN:
 				_join_room()
@@ -110,6 +116,11 @@ func _unhandled_input(event: InputEvent) -> void:
 				_type_address(key)
 			elif _is_back(act):
 				_to_choose()
+		Mode.ROOM_WAIT:
+			if act == UiInput.Act.CONFIRM and web:
+				_share()
+			elif _is_back(act):
+				_leave(ScreenFlow.Outcome.QUIT)
 		_:
 			if _is_back(act):
 				_leave(ScreenFlow.Outcome.QUIT)
@@ -132,7 +143,38 @@ func _choose(act: int) -> void:
 			_leave(ScreenFlow.Outcome.QUIT)
 
 func _to_choose() -> void:
+	_close_field()
 	_mode = Mode.CHOOSE
+	queue_redraw()
+
+## On a phone the code is typed into the page's own field, with the phone's keyboard.
+func _open_field() -> void:
+	if not touch:
+		return
+	if _field == null:
+		_field = CodeField.new()
+		add_child(_field)
+		_field.changed.connect(_on_field_changed)
+		_field.submitted.connect(_on_field_submitted)
+	_field_open = _field.open(_typed)
+
+func _close_field() -> void:
+	if _field != null:
+		_field.close()
+	_field_open = false
+
+func _on_field_changed(text: String) -> void:
+	_typed = clean_code(text)
+	queue_redraw()
+
+func _on_field_submitted(text: String) -> void:
+	_typed = clean_code(text)
+	queue_redraw()
+	if _typed.length() == CODE_LEN:
+		_join_room()
+
+func _share() -> void:
+	_shared = RoomLink.send(RoomLink.url_for(RelayConfig.page_url(), link.code))
 	queue_redraw()
 
 func items() -> Array:
@@ -149,6 +191,7 @@ func _act() -> void:
 		"JOIN ROOM":
 			_typed = ""
 			_mode = Mode.CODE_TYPING
+			_open_field()
 		"LAN HOST":
 			_lan_host()
 		"LAN JOIN":
@@ -173,6 +216,7 @@ static func clean_code(text: String) -> String:
 func prefill(code: String) -> void:
 	_typed = clean_code(code)
 	_mode = Mode.CODE_TYPING
+	_open_field()
 	queue_redraw()
 
 ## The code is typed by character rather than by key position: what matters is
@@ -234,6 +278,7 @@ func _create_room() -> void:
 	_mode = Mode.CONNECTING
 
 func _join_room() -> void:
+	_close_field()
 	_via_room = true
 	_via_quick = false
 	var relay := Relay.new()
@@ -348,7 +393,12 @@ func _draw() -> void:
 		Mode.ROOM_WAIT:
 			TextPainter.draw_centred(self, _font, "ROOM CODE", 88)
 			TextPainter.draw_centred(self, _font, link.code, 108, CODE_TINT, CODE_SCALE)
-			TextPainter.draw_centred(self, _font, "TELL IT TO YOUR FRIEND", 144, HINT_TINT)
+			if web:
+				TextPainter.draw_centred(self, _font,
+					"LINK COPIED" if _shared == "copied" else _hint("ENTER SHARE LINK", "FIRE SHARE LINK"),
+					144, HINT_TINT)
+			else:
+				TextPainter.draw_centred(self, _font, "TELL IT TO YOUR FRIEND", 144, HINT_TINT)
 			TextPainter.draw_centred(self, _font, "WAITING FOR PLAYER", 160, HINT_TINT)
 			TextPainter.draw_centred(self, _font, _hint("ESC CANCEL", "START CANCEL"), 200, HINT_TINT)
 		Mode.CODE_TYPING:
@@ -391,6 +441,8 @@ func hints() -> Array[String]:
 		_hint("ESC CANCEL", "START CANCEL"),
 		_hint("ENTER JOIN  ESC BACK", "FIRE JOIN  START BACK"),
 		_hint("ENTER CONNECT  ESC BACK", "START BACK"),
+		_hint("ENTER SHARE LINK", "FIRE SHARE LINK"),
+		"LINK COPIED",
 	] as Array[String]
 
 ## How long we have been waiting. A stopwatch instead of a count of waiters: for

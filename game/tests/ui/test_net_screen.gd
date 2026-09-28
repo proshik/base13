@@ -265,3 +265,27 @@ func test_every_touch_hint_can_be_drawn() -> void:
 				continue
 			assert_true(TextPainter.glyph_index(text[i]) >= 0, "'%s' cannot be drawn" % text)
 		assert_lt(TextPainter.width_of(text), TextPainter.SCREEN_WIDTH)
+
+func test_keys_are_ignored_while_the_field_is_open() -> void:
+	# The phone's keyboard types into the page's field; the engine may hear the
+	# same keys. Taken from both, every letter would land twice.
+	_pick("JOIN ROOM")
+	net._field_open = true
+	net._unhandled_input(_press(0, "A".unicode_at(0)))
+	assert_eq(net._typed, "")
+
+func test_the_field_fills_the_code() -> void:
+	_pick("JOIN ROOM")
+	net._on_field_changed("abc2")
+	assert_eq(net._typed, "ABC2")
+
+func test_a_short_code_from_the_field_does_not_join() -> void:
+	_pick("JOIN ROOM")
+	net._on_field_submitted("abc")
+	assert_null(net.link)
+	assert_eq(net._mode, net.Mode.CODE_TYPING)
+
+func test_the_field_stays_shut_off_a_phone() -> void:
+	net.touch = false
+	_pick("JOIN ROOM")
+	assert_false(net._field_open)

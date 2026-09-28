@@ -19,7 +19,7 @@ const PATH := "/ws"
 const FLAG := "--relay="
 
 static func url() -> String:
-	return resolve(OS.get_cmdline_user_args(), _page_url())
+	return resolve(OS.get_cmdline_user_args(), page_url())
 
 ## The pure part, and that is what the tests exercise: parsing with no access
 ## to the environment.
@@ -60,7 +60,7 @@ static func from_page(page: String) -> String:
 	# another server without rebuilding. On a public page it would let a link
 	# send a player's game to any server it names, with our address still in the
 	# bar and nothing on screen looking wrong.
-	var override := _query_value(query, "relay")
+	var override := query_value(query, "relay")
 	if override != "" and _is_local(host):
 		return override
 	return scheme + host + PATH
@@ -75,14 +75,14 @@ static func _is_local(host: String) -> bool:
 		name = name.substr(0, colon)
 	return name == "localhost" or name == "127.0.0.1" or name == "[::1]"
 
-static func _query_value(query: String, key: String) -> String:
+static func query_value(query: String, key: String) -> String:
 	for pair in query.split("&", false):
 		var eq := pair.find("=")
 		if eq > 0 and pair.substr(0, eq) == key:
 			return pair.substr(eq + 1).uri_decode()
 	return ""
 
-static func _page_url() -> String:
+static func page_url() -> String:
 	if not OS.has_feature("web"):
 		return ""
 	var here = JavaScriptBridge.eval("window.location.href", true)

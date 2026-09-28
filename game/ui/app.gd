@@ -28,6 +28,9 @@ var _net_seed := 0
 var _desync_tick := -1
 var _touch: TouchControls = null
 var _rotate: RotateHint = null
+## A room's code the page was opened with: the game starts on the join screen with
+## it in. Used once — back in the menu, the network screen opens as usual.
+var _room_code := ""
 
 func _ready() -> void:
 	_set_icon()
@@ -41,6 +44,9 @@ func _ready() -> void:
 	if _wants_selftest():
 		_run_selftest()
 		return
+	_room_code = RoomLink.code_in(RelayConfig.page_url())
+	if _room_code != "":
+		_screen = ScreenFlow.Screen.NET
 	_show(_screen)
 
 ## A determinism self-check. It matters most in the browser: cross-platform
@@ -181,6 +187,9 @@ func _show(screen: int, skipped := 0) -> void:
 		_current.show_tick(_desync_tick)
 	if _current.has_method("configure"):
 		_current.configure(_campaign, _players, _best)
+	if screen == ScreenFlow.Screen.NET and _room_code != "":
+		_current.prefill(_room_code)
+		_room_code = ""
 	_current.finished.connect(_on_finished)
 	if screen == ScreenFlow.Screen.GAMEOVER:
 		_save_record()
