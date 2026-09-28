@@ -26,10 +26,14 @@ var _link: Link = null
 var _local_index := 0
 var _net_seed := 0
 var _desync_tick := -1
+var _touch: TouchControls = null
+var _rotate: RotateHint = null
 
 func _ready() -> void:
 	_set_icon()
 	_fit_window()
+	if TouchDevice.present():
+		_fit_touch()
 	var presence := Presence.new()
 	presence.changed.connect(_on_presence)
 	add_child(presence)
@@ -111,6 +115,33 @@ func _toggle_fullscreen() -> void:
 	else:
 		DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN)
 
+## A phone keeps the picture's height and gives the rest of the width to the thumbs:
+## the stick and the buttons stand in the strips a square picture leaves on a
+## landscape screen. Laid out again whenever the window changes — a browser's bars
+## come and go, and the phone turns.
+func _fit_touch() -> void:
+	var root := get_tree().root
+	root.content_scale_aspect = Window.CONTENT_SCALE_ASPECT_KEEP_HEIGHT
+	# Beyond the picture was the engine's letterbox; now it is the clear colour.
+	RenderingServer.set_default_clear_color(Color.BLACK)
+	_touch = TouchControls.new()
+	add_child(_touch)
+	_rotate = RotateHint.new()
+	add_child(_rotate)
+	root.size_changed.connect(_relayout)
+	_relayout()
+
+func _relayout() -> void:
+	if _touch == null:
+		return
+	var view := get_viewport().get_visible_rect().size
+	var screen := _current as Node2D
+	if screen != null:
+		screen.position.x = StageLayout.offset_x(view.x)
+	_touch.place(view)
+	_rotate.visible = StageLayout.portrait(DisplayServer.window_get_size())
+	_rotate.refresh()
+
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo \
 			and event.physical_keycode == KEY_F:
@@ -141,6 +172,7 @@ func _show(screen: int, skipped := 0) -> void:
 		_campaign = Campaign.new(_players, SimConfig.new(), campaign_seed)
 	_current = load(path).instantiate()
 	add_child(_current)
+	_relayout()
 	if screen == ScreenFlow.Screen.GAME and _link != null:
 		_current.use_input(NetInput.new(_link, _local_index))
 	if screen == ScreenFlow.Screen.STATS:
