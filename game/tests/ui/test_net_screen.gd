@@ -19,7 +19,7 @@ func after_each() -> void:
 ## An item is chosen by name rather than by number: the numbers already drifted
 ## once when the list grew, and the tests failed for no good reason.
 func _pick(title: String) -> void:
-	var index: int = net.ITEMS.find(title)
+	var index: int = net.items().find(title)
 	assert_true(index >= 0, "there is no '%s' item in the menu" % title)
 	net._choice = index
 	net._act()
@@ -209,3 +209,59 @@ func test_waiting_screen_text_fits_and_is_drawable() -> void:
 				"the line '%s' contains a character unknown to the font" % line)
 		assert_lt(TextPainter.width_of(line), TextPainter.SCREEN_WIDTH,
 			"the line '%s' does not fit on the screen" % line)
+
+func _action(name: StringName) -> InputEventAction:
+	var e := InputEventAction.new()
+	e.action = name
+	e.pressed = true
+	return e
+
+func test_a_browser_has_no_lan_items() -> void:
+	# A browser cannot accept a connection, and from an https page it will not
+	# open a plain one.
+	net.web = true
+	assert_false(net.items().has("LAN HOST"))
+	assert_false(net.items().has("LAN JOIN"))
+	assert_true(net.items().has("JOIN ROOM"))
+
+func test_the_desktop_keeps_lan() -> void:
+	net.web = false
+	assert_true(net.items().has("LAN HOST"))
+
+func test_the_screen_picks_an_item() -> void:
+	net.web = true
+	net._unhandled_input(_action(&"touch_down"))
+	net._unhandled_input(_action(&"touch_down"))
+	net._unhandled_input(_action(&"touch_fire"))
+	assert_eq(net._mode, net.Mode.CODE_TYPING, "the third item in a browser is JOIN ROOM")
+
+func test_start_leaves_the_screen() -> void:
+	watch_signals(net)
+	net._unhandled_input(_action(&"touch_start"))
+	assert_signal_emitted_with_parameters(net, "finished", [ScreenFlow.Outcome.QUIT])
+
+func test_start_backs_out_of_typing() -> void:
+	_pick("JOIN ROOM")
+	net._unhandled_input(_action(&"touch_start"))
+	assert_eq(net._mode, net.Mode.CHOOSE)
+
+func test_a_code_is_cleaned() -> void:
+	assert_eq(net.clean_code("ab3xy9z"), "AB3XY9")
+	assert_eq(net.clean_code("A-B_C d"), "ABCD")
+	assert_eq(net.clean_code("AB\nCD"), "ABCD", "a line break is not a character of a code")
+	assert_eq(net.clean_code(""), "")
+
+func test_a_prefilled_code_waits_for_fire() -> void:
+	net.prefill("abc234")
+	assert_eq(net._mode, net.Mode.CODE_TYPING)
+	assert_eq(net._typed, "ABC234")
+	assert_null(net.link, "a link must not join by itself")
+
+func test_every_touch_hint_can_be_drawn() -> void:
+	net.touch = true
+	for text in net.hints():
+		for i in text.length():
+			if text[i] == " ":
+				continue
+			assert_true(TextPainter.glyph_index(text[i]) >= 0, "'%s' cannot be drawn" % text)
+		assert_lt(TextPainter.width_of(text), TextPainter.SCREEN_WIDTH)

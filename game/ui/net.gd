@@ -18,6 +18,9 @@ const SCREEN := Vector2(256, 240)
 const HINT_TINT := Color(0.62, 0.62, 0.62)
 const CODE_TINT := Color(1.0, 0.85, 0.2)
 const ITEMS := ["QUICK GAME", "CREATE ROOM", "JOIN ROOM", "LAN HOST", "LAN JOIN"]
+## A browser cannot accept a connection, and from an https page it will not open a
+## plain one: both ways to meet directly are dead there.
+const LAN_ITEMS := ["LAN HOST", "LAN JOIN"]
 const FIRST_Y := 88
 const STEP_Y := 18
 const TEXT_X := 72
@@ -46,6 +49,10 @@ var seed_value := 0
 ## test substitutes it without touching the process environment. Empty means the
 ## usual lookup.
 var relay_url := ""
+
+## Set once, from the machine; fields so that a test can say "browser" or "phone".
+var web := OS.has_feature("web")
+var touch := TouchDevice.present()
 
 var _font: Texture2D = preload("res://assets/font.png")
 var _sprites: Texture2D = preload("res://assets/sprites.png")
@@ -85,46 +92,87 @@ func _process(delta: float) -> void:
 		_failed("NO CONNECTION")
 
 func _unhandled_input(event: InputEvent) -> void:
-	if not (event is InputEventKey and event.pressed and not event.echo):
-		return
+	var key := event as InputEventKey
+	var typed := key != null and key.pressed and not key.echo
+	var act := UiInput.of(event)
 	match _mode:
 		Mode.CHOOSE:
-			_choose(event)
+			_choose(act)
 		Mode.CODE_TYPING:
-			_type_code(event)
+			if typed:
+				_type_code(key)
+			elif act == UiInput.Act.CONFIRM and _typed.length() == CODE_LEN:
+				_join_room()
+			elif _is_back(act):
+				_to_choose()
 		Mode.LAN_TYPING:
-			_type_address(event)
+			if typed:
+				_type_address(key)
+			elif _is_back(act):
+				_to_choose()
 		_:
-			if event.physical_keycode == KEY_ESCAPE:
+			if _is_back(act):
 				_leave(ScreenFlow.Outcome.QUIT)
 
-func _choose(event: InputEventKey) -> void:
-	match event.physical_keycode:
-		KEY_UP, KEY_W:
-			_choice = (_choice + ITEMS.size() - 1) % ITEMS.size()
+func _is_back(act: int) -> bool:
+	return act == UiInput.Act.BACK or act == UiInput.Act.START
+
+func _choose(act: int) -> void:
+	var count := items().size()
+	match act:
+		UiInput.Act.UP:
+			_choice = (_choice + count - 1) % count
 			queue_redraw()
-		KEY_DOWN, KEY_S:
-			_choice = (_choice + 1) % ITEMS.size()
+		UiInput.Act.DOWN:
+			_choice = (_choice + 1) % count
 			queue_redraw()
-		KEY_ESCAPE:
-			_leave(ScreenFlow.Outcome.QUIT)
-		KEY_ENTER, KEY_SPACE:
+		UiInput.Act.CONFIRM:
 			_act()
+		UiInput.Act.BACK, UiInput.Act.START:
+			_leave(ScreenFlow.Outcome.QUIT)
+
+func _to_choose() -> void:
+	_mode = Mode.CHOOSE
+	queue_redraw()
+
+func items() -> Array:
+	if not web:
+		return ITEMS
+	return ITEMS.filter(func(item: String) -> bool: return not LAN_ITEMS.has(item))
 
 func _act() -> void:
-	match _choice:
-		0:
+	match items()[_choice]:
+		"QUICK GAME":
 			_quick_game()
-		1:
+		"CREATE ROOM":
 			_create_room()
-		2:
+		"JOIN ROOM":
 			_typed = ""
 			_mode = Mode.CODE_TYPING
-		3:
+		"LAN HOST":
 			_lan_host()
-		4:
+		"LAN JOIN":
 			_address = ""
 			_mode = Mode.LAN_TYPING
+	queue_redraw()
+
+## One rule for a code however it came — typed, from the phone's own field, or from a
+## link someone sent: upper case, only what the font draws, six at most. A link is a
+## stranger's text, and it reaches the screen and the server.
+static func clean_code(text: String) -> String:
+	var out := ""
+	for ch in text.to_upper():
+		if out.length() == CODE_LEN:
+			break
+		if ch != " " and TextPainter.glyph_index(ch) >= 0:
+			out += ch
+	return out
+
+## The code a link carried: the join screen with it in, waiting for FIRE — a browser
+## plays no sound before a tap, and a link is no reason to join anything unasked.
+func prefill(code: String) -> void:
+	_typed = clean_code(code)
+	_mode = Mode.CODE_TYPING
 	queue_redraw()
 
 ## The code is typed by character rather than by key position: what matters is
@@ -132,8 +180,7 @@ func _act() -> void:
 ## address.
 func _type_code(event: InputEventKey) -> void:
 	if event.physical_keycode == KEY_ESCAPE:
-		_mode = Mode.CHOOSE
-		queue_redraw()
+		_to_choose()
 		return
 	if event.physical_keycode == KEY_BACKSPACE:
 		_typed = _typed.substr(0, maxi(0, _typed.length() - 1))
@@ -142,16 +189,14 @@ func _type_code(event: InputEventKey) -> void:
 	if event.physical_keycode == KEY_ENTER and _typed.length() == CODE_LEN:
 		_join_room()
 		return
-	var ch := char(event.unicode).to_upper()
-	if ch.length() == 1 and TextPainter.glyph_index(ch) >= 0 \
-			and _typed.length() < CODE_LEN:
-		_typed += ch
+	var ch := char(event.unicode)
+	if ch.length() == 1:
+		_typed = clean_code(_typed + ch)
 		queue_redraw()
 
 func _type_address(event: InputEventKey) -> void:
 	if event.physical_keycode == KEY_ESCAPE:
-		_mode = Mode.CHOOSE
-		queue_redraw()
+		_to_choose()
 		return
 	if event.physical_keycode == KEY_BACKSPACE:
 		_address = _address.substr(0, maxi(0, _address.length() - 1))
@@ -290,25 +335,27 @@ func _draw() -> void:
 	TextPainter.draw_centred(self, _font, "NETWORK GAME", 40)
 	match _mode:
 		Mode.CHOOSE:
-			for i in ITEMS.size():
-				TextPainter.draw_line(self, _font, ITEMS[i],
+			var shown := items()
+			for i in shown.size():
+				TextPainter.draw_line(self, _font, shown[i],
 					Vector2i(TEXT_X, FIRST_Y + i * STEP_Y))
 			_draw_cursor()
-			TextPainter.draw_centred(self, _font, "ESC BACK", 200, HINT_TINT)
+			TextPainter.draw_centred(self, _font, _hint("ESC BACK", "START BACK"), 200, HINT_TINT)
 		Mode.QUICK_WAIT:
 			TextPainter.draw_centred(self, _font, "LOOKING FOR PLAYER", 100)
 			TextPainter.draw_centred(self, _font, waited_text(_waited), 128, CODE_TINT)
-			TextPainter.draw_centred(self, _font, "ESC CANCEL", 200, HINT_TINT)
+			TextPainter.draw_centred(self, _font, _hint("ESC CANCEL", "START CANCEL"), 200, HINT_TINT)
 		Mode.ROOM_WAIT:
 			TextPainter.draw_centred(self, _font, "ROOM CODE", 88)
 			TextPainter.draw_centred(self, _font, link.code, 108, CODE_TINT, CODE_SCALE)
 			TextPainter.draw_centred(self, _font, "TELL IT TO YOUR FRIEND", 144, HINT_TINT)
 			TextPainter.draw_centred(self, _font, "WAITING FOR PLAYER", 160, HINT_TINT)
-			TextPainter.draw_centred(self, _font, "ESC CANCEL", 200, HINT_TINT)
+			TextPainter.draw_centred(self, _font, _hint("ESC CANCEL", "START CANCEL"), 200, HINT_TINT)
 		Mode.CODE_TYPING:
 			TextPainter.draw_centred(self, _font, "ROOM CODE", 88)
 			TextPainter.draw_centred(self, _font, _typed + "_", 108, CODE_TINT, CODE_SCALE)
-			TextPainter.draw_centred(self, _font, "ENTER JOIN  ESC BACK", 200, HINT_TINT)
+			TextPainter.draw_centred(self, _font, _hint("ENTER JOIN  ESC BACK", "FIRE JOIN  START BACK"), 200,
+				HINT_TINT)
 		Mode.LAN_WAIT:
 			TextPainter.draw_centred(self, _font, "WAITING FOR PLAYER", 88)
 			var addresses := _local_addresses()
@@ -318,20 +365,33 @@ func _draw() -> void:
 				TextPainter.draw_centred(self, _font, addresses[i], 112 + i * 12)
 			TextPainter.draw_centred(self, _font, "PORT %d" % Session.DEFAULT_PORT,
 				160, HINT_TINT)
-			TextPainter.draw_centred(self, _font, "ESC CANCEL", 200, HINT_TINT)
+			TextPainter.draw_centred(self, _font, _hint("ESC CANCEL", "START CANCEL"), 200, HINT_TINT)
 		Mode.LAN_TYPING:
 			TextPainter.draw_centred(self, _font, "HOST ADDRESS", 88)
 			TextPainter.draw_centred(self, _font, _address + "_", 112)
-			TextPainter.draw_centred(self, _font, "ENTER CONNECT  ESC BACK", 200, HINT_TINT)
+			TextPainter.draw_centred(self, _font, _hint("ENTER CONNECT  ESC BACK", "START BACK"), 200,
+				HINT_TINT)
 		Mode.CONNECTING:
 			TextPainter.draw_centred(self, _font, "CONNECTING", 104)
-			TextPainter.draw_centred(self, _font, "ESC CANCEL", 200, HINT_TINT)
+			TextPainter.draw_centred(self, _font, _hint("ESC CANCEL", "START CANCEL"), 200, HINT_TINT)
 		Mode.FAILED:
 			TextPainter.draw_centred(self, _font, _trouble, 88)
 			for i in hint_lines().size():
 				TextPainter.draw_centred(self, _font, hint_lines()[i],
 					120 + i * 14, HINT_TINT)
-			TextPainter.draw_centred(self, _font, "ESC BACK", 200, HINT_TINT)
+			TextPainter.draw_centred(self, _font, _hint("ESC BACK", "START BACK"), 200, HINT_TINT)
+
+func _hint(desk: String, phone: String) -> String:
+	return phone if touch else desk
+
+## Every hint this screen can show here, for the test that they can be drawn.
+func hints() -> Array[String]:
+	return [
+		_hint("ESC BACK", "START BACK"),
+		_hint("ESC CANCEL", "START CANCEL"),
+		_hint("ENTER JOIN  ESC BACK", "FIRE JOIN  START BACK"),
+		_hint("ENTER CONNECT  ESC BACK", "START BACK"),
+	] as Array[String]
 
 ## How long we have been waiting. A stopwatch instead of a count of waiters: for
 ## the count not to lie, the server would have to broadcast queue changes to
