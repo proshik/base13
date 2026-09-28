@@ -31,6 +31,9 @@ var _rotate: RotateHint = null
 ## A room's code the page was opened with: the game starts on the join screen with
 ## it in. Used once — back in the menu, the network screen opens as usual.
 var _room_code := ""
+## Android's browser can hide its bars when asked from a tap; an iPhone's cannot,
+## there the home-screen install is the way.
+var _wants_fullscreen := false
 
 func _ready() -> void:
 	_set_icon()
@@ -134,6 +137,8 @@ func _fit_touch() -> void:
 	add_child(_touch)
 	_rotate = RotateHint.new()
 	add_child(_rotate)
+	_wants_fullscreen = ClientInfo.platform_name(OS.get_name(),
+		Callable(OS, "has_feature")) == "web_android"
 	root.size_changed.connect(_relayout)
 	_relayout()
 
@@ -147,6 +152,11 @@ func _relayout() -> void:
 	_touch.place(view)
 	_rotate.visible = StageLayout.portrait(DisplayServer.window_get_size())
 	_rotate.refresh()
+
+func _input(event: InputEvent) -> void:
+	if _wants_fullscreen and event is InputEventScreenTouch and event.pressed:
+		_wants_fullscreen = false
+		DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN)
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo \

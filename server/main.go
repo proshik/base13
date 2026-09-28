@@ -311,7 +311,7 @@ func (s *server) routes(static string) *http.ServeMux {
 		// twin's encoding, the redirect, the refusal. The relay and the health
 		// check stay outside it — one takes its socket away from the HTTP
 		// library, the other is polled by machines, not players.
-		mux.Handle("/", s.countResponses(noCacheIndex(precompressed(static, http.FileServer(http.Dir(static))))))
+		mux.Handle("/", s.countResponses(alwaysRevalidate(precompressed(static, http.FileServer(http.Dir(static))))))
 	}
 	return mux
 }
@@ -334,8 +334,7 @@ func (s *server) countResponses(next http.Handler) http.Handler {
 }
 
 // routeOf names what a path is to a player: the page they open, the engine
-// they wait on, or one of the small files around them. The page is the path
-// noCacheIndex treats as the page.
+// they wait on, or one of the small files around them.
 func routeOf(path string) string {
 	switch {
 	case path == "/" || strings.HasSuffix(path, "/index.html"):
@@ -436,15 +435,16 @@ func precompressed(dir string, next http.Handler) http.Handler {
 	})
 }
 
-// noCacheIndex forbids caching the page itself and only it. Godot's files
-// carry no fingerprint in their names, so a cached index.html would mean an
-// updated game never reaches the player at all. Everything else only benefits
-// from caching: the names are stable and the files are large.
-func noCacheIndex(next http.Handler) http.Handler {
+// alwaysRevalidate has the browser ask about every file each time it wants it.
+// Godot's files carry no fingerprint in their names, and a file sent without
+// Cache-Control is kept as long as the browser guesses — a tenth of its age — so
+// a fresh page used to start an index.pck weeks old for days after a release,
+// and a cached service worker would keep a home-screen install on the old
+// release for good. A file that has not changed costs a 304 and no body: the
+// file server answers If-Modified-Since by itself.
+func alwaysRevalidate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/" || strings.HasSuffix(r.URL.Path, "/index.html") {
-			w.Header().Set("Cache-Control", "no-cache")
-		}
+		w.Header().Set("Cache-Control", "no-cache")
 		next.ServeHTTP(w, r)
 	})
 }

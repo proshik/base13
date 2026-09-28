@@ -563,28 +563,51 @@ func TestStaticIsServedWhenAFolderIsGiven(t *testing.T) {
 	}
 }
 
-func TestIndexIsNotCachedButTheRestIs(t *testing.T) {
-	// Godot's files carry no fingerprint in their names: caching index.html
-	// forever would mean an updated game never reaches the player at all.
-	addr, stop := startServerWithStatic(t, writeStatic(t))
+func TestEveryGameFileIsRevalidated(t *testing.T) {
+	// Godot's files carry no fingerprint in their names. Sent with no
+	// Cache-Control, a browser guesses how long each stays fresh — a tenth of
+	// its age — so a fresh page started an index.pck weeks old for days after a
+	// release, and a cached service worker would keep a home-screen install on
+	// the old release for good. Every file is asked about again instead; one
+	// that has not changed costs a 304 and no body.
+	dir := writeStatic(t)
+	names := []string{"index.pck", "index.js", "index.service.worker.js", "index.manifest.json"}
+	for _, name := range names {
+		if err := os.WriteFile(dir+"/"+name, []byte("{}"), 0o644); err != nil {
+			t.Fatalf("file was not written: %v", err)
+		}
+	}
+	addr, stop := startServerWithStatic(t, dir)
 	defer stop()
 
-	page, err := http.Get("http://" + addr + "/")
-	if err != nil {
-		t.Fatalf("the page was not served: %v", err)
-	}
-	page.Body.Close()
-	if page.Header.Get("Cache-Control") == "" {
-		t.Fatal("index.html must forbid caching explicitly")
+	for _, name := range append([]string{"", "index.html", "index.wasm"}, names...) {
+		response, err := http.Get("http://" + addr + "/" + name)
+		if err != nil {
+			t.Fatalf("/%s was not served: %v", name, err)
+		}
+		response.Body.Close()
+		if got := response.Header.Get("Cache-Control"); got != "no-cache" {
+			t.Errorf("/%s must be asked about again, got Cache-Control %q", name, got)
+		}
 	}
 
-	wasm, err := http.Get("http://" + addr + "/index.wasm")
+	first, err := http.Get("http://" + addr + "/index.wasm")
 	if err != nil {
-		t.Fatalf("the file was not served: %v", err)
+		t.Fatalf("the engine was not served: %v", err)
 	}
-	wasm.Body.Close()
-	if wasm.Header.Get("Cache-Control") != "" {
-		t.Fatal("forbidding cache on the other files only hurts")
+	first.Body.Close()
+	again, err := http.NewRequest(http.MethodGet, "http://"+addr+"/index.wasm", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	again.Header.Set("If-Modified-Since", first.Header.Get("Last-Modified"))
+	answer, err := http.DefaultClient.Do(again)
+	if err != nil {
+		t.Fatalf("the engine was not asked about again: %v", err)
+	}
+	answer.Body.Close()
+	if answer.StatusCode != http.StatusNotModified {
+		t.Fatalf("an unchanged engine must cost a 304, got %d", answer.StatusCode)
 	}
 }
 
@@ -2027,7 +2050,7 @@ func engineBytes(size int) []byte {
 }
 
 func TestRoutesAreNamedByPath(t *testing.T) {
-	// The page is what noCacheIndex calls the page; the engine is the one file a
+	// The page is what a player opens; the engine is the one file a
 	// player waits on. Everything else the web build loads is small enough to
 	// count together.
 	for _, c := range []struct{ path, route string }{

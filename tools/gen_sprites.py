@@ -116,9 +116,12 @@ def font_atlas():
 ICON_SIZE = 256
 ICON_SCALE = 12
 ICON_BACKGROUND = (24, 24, 24, 255)
+# The sizes a home-screen install asks for, each with its own whole multiplier: the
+# tank takes about three quarters of the square, like the 256 icon.
+PWA_ICONS = {"icon_144": (144, 7), "icon_180": (180, 9), "icon_512": (512, 24)}
 
 
-def icon_rows():
+def icon_rows(size=ICON_SIZE, scale=ICON_SCALE):
     """The application icon: the player tank scaled by a whole multiplier.
 
     Ours rather than somebody else's: the project rule is that all content is
@@ -127,22 +130,22 @@ def icon_rows():
     """
     grid = data.TANKS["player0"][0]
     palette = data.PALETTES["player"]
-    rows = [bytearray(ICON_SIZE * 4) for _ in range(ICON_SIZE)]
-    for y in range(ICON_SIZE):
-        for x in range(ICON_SIZE):
+    rows = [bytearray(size * 4) for _ in range(size)]
+    for y in range(size):
+        for x in range(size):
             at = x * 4
             rows[y][at:at + 4] = bytes(ICON_BACKGROUND)
-    span = len(grid) * ICON_SCALE
-    offset = (ICON_SIZE - span) // 2
+    span = len(grid) * scale
+    offset = (size - span) // 2
     for gy, line in enumerate(grid):
         for gx, ch in enumerate(line):
             if ch == ".":
                 continue
             color = palette[int(ch)]
-            for dy in range(ICON_SCALE):
-                row = rows[offset + gy * ICON_SCALE + dy]
-                for dx in range(ICON_SCALE):
-                    at = (offset + gx * ICON_SCALE + dx) * 4
+            for dy in range(scale):
+                row = rows[offset + gy * scale + dy]
+                for dx in range(scale):
+                    at = (offset + gx * scale + dx) * 4
                     row[at:at + 4] = bytes(color)
     return rows
 
@@ -323,6 +326,8 @@ def build():
         width = columns * cell_size
         height = rows_count * cell_size
         out[name] = (width, height, raw_rgba(width, height, cells, cell_size, columns))
+    for name, (size, scale) in PWA_ICONS.items():
+        out[name] = (size, size, icon_rows(size, scale))
     return out
 
 
