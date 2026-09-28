@@ -34,6 +34,10 @@ run:
 serve:
     cd server && go run .
 
+# The web build on a phone on the same Wi-Fi, over https with a mkcert certificate
+phone *args:
+    ./tools/phone.sh {{args}}
+
 # Core boundary check only — the fastest of them all
 isolation:
     ./tools/check_core_isolation.sh
