@@ -27,7 +27,6 @@ var _local_index := 0
 var _net_seed := 0
 var _desync_tick := -1
 var _touch: TouchControls = null
-var _rotate: RotateHint = null
 ## A room's code the page was opened with: the game starts on the join screen with
 ## it in. Used once — back in the menu, the network screen opens as usual.
 var _room_code := ""
@@ -124,19 +123,22 @@ func _toggle_fullscreen() -> void:
 	else:
 		DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN)
 
-## A phone keeps the picture's height and gives the rest of the width to the thumbs:
-## the stick and the buttons stand in the strips a square picture leaves on a
-## landscape screen. Laid out again whenever the window changes — a browser's bars
-## come and go, and the phone turns.
+## A phone gives the picture the whole of one side and the thumbs the rest: on its
+## side the picture keeps its height and the stick and the buttons stand in the
+## strips beside it; upright it keeps its width and they stand below it. Laid out
+## again whenever the window changes — a browser's bars come and go, and the
+## phone turns.
+##
+## The scale is not whole here, unlike the desktop window: a whole one left a
+## third of a phone's height empty in Safari, and at three device pixels to a
+## point the uneven pixels it trades that for are hard to see.
 func _fit_touch() -> void:
 	var root := get_tree().root
-	root.content_scale_aspect = Window.CONTENT_SCALE_ASPECT_KEEP_HEIGHT
+	root.content_scale_stretch = Window.CONTENT_SCALE_STRETCH_FRACTIONAL
 	# Beyond the picture was the engine's letterbox; now it is the clear colour.
 	RenderingServer.set_default_clear_color(Color.BLACK)
 	_touch = TouchControls.new()
 	add_child(_touch)
-	_rotate = RotateHint.new()
-	add_child(_rotate)
 	_wants_fullscreen = ClientInfo.platform_name(OS.get_name(),
 		Callable(OS, "has_feature")) == "web_android"
 	root.size_changed.connect(_relayout)
@@ -145,13 +147,21 @@ func _fit_touch() -> void:
 func _relayout() -> void:
 	if _touch == null:
 		return
+	var root := get_tree().root
+	var aspect := Window.CONTENT_SCALE_ASPECT_KEEP_WIDTH \
+		if StageLayout.portrait(DisplayServer.window_get_size()) \
+		else Window.CONTENT_SCALE_ASPECT_KEEP_HEIGHT
+	if root.content_scale_aspect != aspect:
+		# Not from inside the window's own resize: changed there, the viewport kept
+		# the size of the old aspect and stretched it to the new one. The change
+		# resizes the viewport again, and that lays it out.
+		root.set_deferred("content_scale_aspect", aspect)
+		return
 	var view := get_viewport().get_visible_rect().size
 	var screen := _current as Node2D
 	if screen != null:
-		screen.position.x = StageLayout.offset_x(view.x)
+		screen.position = Vector2(StageLayout.picture_at(view))
 	_touch.place(view)
-	_rotate.visible = StageLayout.portrait(DisplayServer.window_get_size())
-	_rotate.refresh()
 
 func _input(event: InputEvent) -> void:
 	if _wants_fullscreen and event is InputEventScreenTouch and event.pressed:

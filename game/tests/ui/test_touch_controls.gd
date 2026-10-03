@@ -45,6 +45,29 @@ func test_the_controls_stay_off_the_picture() -> void:
 	assert_gte(controls.fire_centre().x - TouchControls.BUTTON_RADIUS, 444.0,
 		"FIRE covers the panel")
 
+func test_upright_the_controls_stay_below_the_picture() -> void:
+	var view := Vector2(256, 556)
+	controls.place(view)
+	var bottom := StageLayout.picture_at(view).y + StageLayout.BASE.y
+	assert_gte(controls.stick_rect().position.y, float(bottom), "the stick covers the field")
+	assert_gte(controls.fire_centre().y - TouchControls.BUTTON_RADIUS, float(bottom),
+		"FIRE covers the field")
+	assert_gte(controls.start_centre().y - TouchControls.START_RADIUS, float(bottom),
+		"START covers the field")
+
+func test_start_is_well_away_from_fire() -> void:
+	# A thumb on FIRE must not pause the game by brushing START.
+	for view in [Vector2(256, 556), Vector2(256, 420), Vector2(633, 240), Vector2(560, 240)]:
+		controls.place(view)
+		var gap := controls.fire_centre().distance_to(controls.start_centre())
+		assert_gt(gap, TouchControls.BUTTON_TOUCH + TouchControls.START_TOUCH + 8.0,
+			"FIRE and START too close at %s" % view)
+
+func test_the_stick_takes_its_whole_strip() -> void:
+	# A thumb lands anywhere in the strip and pulls; there is no spot to hit.
+	controls.place(Vector2(256, 556))
+	assert_eq(controls.stick_rect(), StageLayout.stick_zone(Vector2(256, 556)))
+
 func test_the_labels_can_be_drawn() -> void:
 	for text in [TouchControls.FIRE_TEXT, TouchControls.START_TEXT, RotateHint.TEXT]:
 		for i in text.length():

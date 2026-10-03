@@ -1,7 +1,7 @@
 class_name TouchControls
 extends CanvasLayer
 
-## The stick and two buttons on a touch screen, in the strips beside the picture.
+## The stick and two buttons on a touch screen, beside the picture or below it.
 ## The engine's own nodes take the fingers — several at once, one sliding off a
 ## button — and this layer turns what they report into `touch_*` actions, the only
 ## thing the rest of the game reads. A direction becomes an event when it changes,
@@ -17,10 +17,15 @@ const DIRECTION_ACTIONS := {
 	Types.IN_UP: &"touch_up", Types.IN_DOWN: &"touch_down",
 	Types.IN_LEFT: &"touch_left", Types.IN_RIGHT: &"touch_right",
 }
-const STICK_SIZE := 72.0          ## the stick's reach, in base pixels
-const STICK_AREA := 144.0         ## where a thumb may land to take it
-const CELL := 14                  ## one arm of the drawn cross
-const BUTTON_RADIUS := 18
+## How far a thumb pulls for a full push, in base pixels, twice over. The stick
+## follows a thumb pulled past it, so a long pull never sticks at the edge.
+const STICK_SIZE := 64.0
+const CELL := 18                  ## one arm of the drawn cross
+const BUTTON_RADIUS := 26
+const START_RADIUS := 12
+## Where a touch still counts: a thumb is bigger than the drawing.
+const BUTTON_TOUCH := 34.0
+const START_TOUCH := 20.0
 const FIRE_TEXT := "FIRE"
 const START_TEXT := "START"
 const IDLE := Color(1, 1, 1, 0.35)
@@ -33,11 +38,13 @@ var _stick: VirtualJoystick
 var _fire: TouchScreenButton
 var _start: TouchScreenButton
 var _art: Node2D
-var _stick_centre := Vector2.ZERO
+var _stick_centre := Vector2.ZERO   ## where the cross rests
+var _stick_at := Vector2.ZERO       ## where it is drawn: under the thumb while held
+var _stick_finger := -1             ## the touch holding the stick, -1 for none
 
 func _ready() -> void:
 	_stick = VirtualJoystick.new()
-	_stick.joystick_mode = VirtualJoystick.JOYSTICK_DYNAMIC
+	_stick.joystick_mode = VirtualJoystick.JOYSTICK_FOLLOWING
 	_stick.joystick_size = STICK_SIZE
 	_stick.tip_size = STICK_SIZE / 2.0
 	_stick.deadzone_ratio = 0.0   # Touch.compose has its own
@@ -48,8 +55,8 @@ func _ready() -> void:
 	for style in ["normal_joystick", "normal_tip", "pressed_joystick", "pressed_tip"]:
 		_stick.add_theme_stylebox_override(style, StyleBoxEmpty.new())
 	add_child(_stick)
-	_fire = _button(&"touch_fire", true)
-	_start = _button(&"touch_start", false)
+	_fire = _button(&"touch_fire", true, BUTTON_TOUCH)
+	_start = _button(&"touch_start", false, START_TOUCH)
 	_art = Node2D.new()
 	_art.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
 	_art.draw.connect(_paint)
@@ -58,10 +65,10 @@ func _ready() -> void:
 
 ## FIRE takes a thumb sliding onto it — from the edge of the screen, from START — as
 ## a press; START does not, or a thumb crossing it on the way to FIRE would pause.
-func _button(action: StringName, passby: bool) -> TouchScreenButton:
+func _button(action: StringName, passby: bool, reach: float) -> TouchScreenButton:
 	var button := TouchScreenButton.new()
 	var shape := CircleShape2D.new()
-	shape.radius = BUTTON_RADIUS + 4   # a thumb is bigger than the drawing
+	shape.radius = reach
 	button.shape = shape
 	button.shape_centered = true
 	button.passby_press = passby
@@ -98,19 +105,33 @@ func _send(action: StringName, pressed: bool) -> void:
 	if _art != null:
 		_art.queue_redraw()
 
-## The stick in the middle of the left strip, the buttons in the middle of the right
-## one, START above FIRE. A strip narrower than a control lets it overlap the edge of
-## the picture rather than leave the screen.
+## The stick takes its whole zone: a thumb lands anywhere in it and pulls. FIRE
+## stands in the middle of its zone, START small in the zone's far top corner,
+## well away from FIRE: a thumb brushing it would pause the game.
 func place(view: Vector2) -> void:
-	var strip := float(StageLayout.offset_x(view.x))
-	var middle := view.y * 0.6
-	_stick_centre = Vector2(maxf(strip / 2.0, STICK_AREA / 2.0), middle)
-	_stick.size = Vector2(STICK_AREA, STICK_AREA)
-	_stick.position = _stick_centre - _stick.size / 2.0
-	var right := view.x - maxf(strip / 2.0, BUTTON_RADIUS * 2.0)
-	_fire.position = Vector2(right, middle + 24)
-	_start.position = Vector2(right, middle - 36)
+	var zone := StageLayout.stick_zone(view)
+	_stick.position = zone.position
+	_stick.size = zone.size
+	_stick_centre = zone.get_center()
+	if _stick_finger < 0:
+		_stick_at = _stick_centre
+	var buttons := StageLayout.button_zone(view)
+	_fire.position = Vector2(buttons.get_center().x, buttons.position.y + buttons.size.y * 0.6)
+	_start.position = buttons.end - Vector2(START_TOUCH + 2.0, buttons.size.y - START_TOUCH - 2.0)
 	_art.queue_redraw()
+
+## The cross is drawn where the thumb came down, so it shows what it steers by.
+func _input(event: InputEvent) -> void:
+	var touch := event as InputEventScreenTouch
+	if touch != null:
+		if touch.pressed and _stick_finger < 0 and stick_rect().has_point(touch.position):
+			_stick_finger = touch.index
+			_stick_at = touch.position
+			_art.queue_redraw()
+		elif not touch.pressed and touch.index == _stick_finger:
+			_stick_finger = -1
+			_stick_at = _stick_centre
+			_art.queue_redraw()
 
 func stick_rect() -> Rect2:
 	return Rect2(_stick.position, _stick.size)
@@ -118,12 +139,15 @@ func stick_rect() -> Rect2:
 func fire_centre() -> Vector2:
 	return _fire.position
 
+func start_centre() -> Vector2:
+	return _start.position
+
 func _paint() -> void:
-	_cross(_stick_centre)
+	_cross(_stick_at)
 	_disc(_fire.position, BUTTON_RADIUS, LIT if _held.has(&"touch_fire") else IDLE)
-	_disc(_start.position, BUTTON_RADIUS - 6, LIT if _held.has(&"touch_start") else IDLE)
+	_disc(_start.position, START_RADIUS, LIT if _held.has(&"touch_start") else IDLE)
 	_label(FIRE_TEXT, _fire.position + Vector2(0, BUTTON_RADIUS + 4))
-	_label(START_TEXT, _start.position + Vector2(0, BUTTON_RADIUS - 2))
+	_label(START_TEXT, _start.position + Vector2(0, START_RADIUS + 4))
 
 ## The console's cross: a centre and four arms, the one held lit.
 func _cross(centre: Vector2) -> void:
