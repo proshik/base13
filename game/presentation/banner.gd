@@ -12,6 +12,7 @@ const SCREEN := Vector2(256, 240)
 const BACKGROUND := Color(0, 0, 0)
 
 var _font: Texture2D = preload("res://assets/font.png")
+var text_scale := 1
 var _text := ""
 var _bounds := Rect2(Vector2.ZERO, SCREEN)
 
@@ -31,8 +32,9 @@ func _draw() -> void:
 	draw_rect(_bounds, BACKGROUND)
 	# A line break starts a new line, each centred; the block stays in the middle.
 	var lines := _text.split("\n")
-	var top := int(_bounds.get_center().y) - TextPainter.GLYPH_PX * lines.size()
+	var top := int(_bounds.get_center().y) - TextPainter.GLYPH_PX * text_scale * lines.size()
 	for i in lines.size():
-		var width := TextPainter.width_of(lines[i])
-		var at := Vector2i(int(_bounds.get_center().x) - width / 2, top + i * TextPainter.GLYPH_PX * 2)
-		TextPainter.draw_line(self, _font, lines[i], at)
+		var width := TextPainter.width_of(lines[i], text_scale)
+		var at := Vector2i(int(_bounds.get_center().x) - width / 2,
+			top + i * TextPainter.GLYPH_PX * text_scale * 2)
+		TextPainter.draw_line(self, _font, lines[i], at, Color.WHITE, text_scale)

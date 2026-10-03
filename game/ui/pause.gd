@@ -27,6 +27,7 @@ var _font: Texture2D = preload("res://assets/font.png")
 var _sprites: Texture2D = preload("res://assets/sprites.png")
 var _kind := Kind.PAUSE
 var _choice := 0
+var touch := false
 var _bounds := Rect2(Vector2.ZERO, SCREEN)
 
 func _ready() -> void:
@@ -51,12 +52,17 @@ func _draw() -> void:
 	var asking := _kind == Kind.LEAVE
 	var offset := Vector2i(_bounds.get_center() - SCREEN / 2.0)
 	draw_rect(_bounds, ASKING_VEIL if asking else VEIL)
-	TextPainter.draw_centred(self, _font, "LEAVE MATCH" if asking else "PAUSE", 100 + offset.y)
+	var text_scale := 2 if touch else 1
+	var first_y := FIRST_Y
+	var step_y := 24 if touch else STEP_Y
+	var text_x := 96 if touch else TEXT_X
+	TextPainter.draw_centred(self, _font, "LEAVE MATCH" if asking else "PAUSE",
+		(84 if touch else 100) + offset.y, Color.WHITE, text_scale)
 	for i in ITEMS.size():
-		TextPainter.draw_line(self, _font, ITEMS[i], Vector2i(TEXT_X, FIRST_Y + i * STEP_Y) + offset,
-			Color.WHITE if i == _choice else HINT_TINT)
+		TextPainter.draw_line(self, _font, ITEMS[i], Vector2i(text_x, first_y + i * step_y) + offset,
+			Color.WHITE if i == _choice else HINT_TINT, text_scale)
 	# The cursor is a tank, as on the title menu.
 	var frame := Frames.tank(Types.TankType.PLAYER, 0, Types.Dir.RIGHT, 0)
 	var src := Rect2i((frame % 16) * 16, (frame / 16) * 16, 16, 16)
-	var at := Vector2(TEXT_X - 22, FIRST_Y + _choice * STEP_Y - 4) + Vector2(offset)
+	var at := Vector2(text_x - 22, first_y + _choice * step_y + (0 if touch else -4)) + Vector2(offset)
 	draw_texture_rect_region(_sprites, Rect2(at, Vector2(16, 16)), src)

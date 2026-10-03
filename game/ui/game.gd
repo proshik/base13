@@ -122,6 +122,8 @@ func layout_touch(view: Vector2) -> void:
 	var field_rect := Rect2(8, 8, 240, 240)
 	_banner.set_bounds(field_rect)
 	_pause.set_bounds(field_rect)
+	_pause.touch = true
+	_banner.text_scale = 2
 	queue_redraw()
 
 func _unhandled_input(event: InputEvent) -> void:

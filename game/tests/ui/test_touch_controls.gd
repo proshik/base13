@@ -6,11 +6,14 @@ extends GutTest
 var controls: TouchControls
 
 func before_each() -> void:
+	var viewport := SubViewport.new()
+	viewport.size = Vector2i(256, 556)
+	add_child_autofree(viewport)
 	controls = TouchControls.new()
-	add_child_autofree(controls)
+	viewport.add_child(controls)
 
 func after_each() -> void:
-	controls.steer(0)
+	controls.release_all()
 	for action in Touch.ACTIONS:
 		Input.action_release(action)
 	Input.action_release(&"touch_start")
@@ -113,8 +116,8 @@ func test_losing_focus_releases_the_stick_fire_and_start() -> void:
 	assert_eq(Touch.bits(), 0, "the tank would keep moving or firing")
 	assert_false(Input.is_action_pressed(&"touch_start"))
 
-func test_the_stick_takes_its_whole_strip() -> void:
-	# A thumb lands anywhere in the strip and pulls; there is no spot to hit.
+func test_the_stick_keeps_its_reserved_strip() -> void:
+	# The fixed cross stays in the reserved strip, separate from START.
 	controls.place(Vector2(256, 556))
 	assert_eq(controls.stick_rect(), StageLayout.stick_zone(Vector2(256, 556)))
 
@@ -154,3 +157,68 @@ class _Spy extends Node:
 	func _input(event: InputEvent) -> void:
 		if event is InputEventAction and event.pressed:
 			_seen.append(String(event.action))
+
+## Route touches through a viewport: testing steer() alone never exercises where
+## the engine puts the joystick's origin, which swallowed stationary taps.
+func _touch(at: Vector2, pressed: bool, index := 0) -> void:
+	var event := InputEventScreenTouch.new()
+	event.position = at
+	event.pressed = pressed
+	event.index = index
+	controls.get_viewport().push_input(event, true)
+	Input.flush_buffered_events()
+
+func test_tapping_each_arrow_moves_immediately_and_releases() -> void:
+	controls.place(Vector2(256, 556))
+	for pair in [[Vector2.UP, Types.IN_UP], [Vector2.DOWN, Types.IN_DOWN],
+			[Vector2.LEFT, Types.IN_LEFT], [Vector2.RIGHT, Types.IN_RIGHT]]:
+		var at: Vector2 = controls.cross_centre() + pair[0] * TouchControlArt.CELL
+		_touch(at, true)
+		assert_eq(Touch.bits(), pair[1], "a stationary press needs no swipe")
+		_touch(at, false)
+		assert_eq(Touch.bits(), 0, "release must not wait for the next frame")
+
+func test_a_tap_between_frames_reaches_the_menu_and_the_next_tick() -> void:
+	controls.place(Vector2(256, 556))
+	var menu = load("res://ui/menu.gd").new()
+	menu.touch = true
+	add_child_autofree(menu)
+	add_child_autofree(PressFeed.new(func() -> bool: return true))
+	var at := controls.cross_centre() + Vector2.DOWN * TouchControlArt.CELL
+	_touch(at, true)
+	_touch(at, false)
+	assert_true(menu._is_network(), "one tap should select NETWORK")
+	assert_eq(PressLatch.take(0), Types.IN_DOWN, "the next tick must remember the tap")
+	assert_eq(PressLatch.take(0), 0, "a tap belongs to only one tick")
+
+func test_dragging_between_arrows_changes_direction_while_fire_is_held() -> void:
+	controls.place(Vector2(256, 556))
+	_touch(controls.fire_centre(), true, 1)
+	_touch(controls.cross_centre() + Vector2.LEFT * TouchControlArt.CELL, true)
+	var event := InputEventScreenDrag.new()
+	event.position = controls.cross_centre() + Vector2.UP * TouchControlArt.CELL
+	event.index = 0
+	controls.get_viewport().push_input(event, true)
+	Input.flush_buffered_events()
+	await get_tree().process_frame
+	assert_eq(Touch.bits(), Types.IN_UP | Types.IN_FIRE)
+	_touch(event.position, false)
+	assert_eq(Touch.bits(), Types.IN_FIRE)
+	_touch(controls.fire_centre(), false, 1)
+	assert_eq(Touch.bits(), 0)
+
+func test_a_canceled_drag_does_not_turn_into_a_new_press() -> void:
+	controls.place(Vector2(256, 556))
+	var seen: Array = []
+	add_child_autofree(_Spy.new(seen))
+	_touch(controls.cross_centre(), true)
+	var drag := InputEventScreenDrag.new()
+	drag.position = controls.cross_centre() + Vector2.UP * TouchControlArt.CELL
+	controls.get_viewport().push_input(drag, true)
+	var cancel := InputEventScreenTouch.new()
+	cancel.position = drag.position
+	cancel.canceled = true
+	controls.get_viewport().push_input(cancel, true)
+	Input.flush_buffered_events()
+	assert_false(seen.has("touch_up"), "a canceled gesture must not select a menu item")
+	assert_eq(Touch.bits(), 0)

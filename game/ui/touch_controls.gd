@@ -17,9 +17,9 @@ const DIRECTION_ACTIONS := {
 	Types.IN_UP: &"touch_up", Types.IN_DOWN: &"touch_down",
 	Types.IN_LEFT: &"touch_left", Types.IN_RIGHT: &"touch_right",
 }
-## How far a thumb pulls for a full push, in base pixels, twice over. The stick
-## follows a thumb pulled past it, so a long pull never sticks at the edge.
-const STICK_SIZE := 64.0
+## The fixed hit area includes every arm of the drawn cross. Full strength is
+## still reached 32 pixels from its centre.
+const STICK_SIZE := 80.0
 const BUTTON_RADIUS := 30
 const START_RADIUS := 8
 ## Where a touch still counts: a thumb is bigger than the drawing.
@@ -38,13 +38,29 @@ var _stick: VirtualJoystick
 var _fire: TouchScreenButton
 var _start: TouchScreenButton
 var _art: TouchControlArt
+var _stick_point := Vector2.ZERO
+var _stick_canceled := false
 var _stick_centre := Vector2.ZERO   ## where the cross stands
 
 func _ready() -> void:
 	_stick = VirtualJoystick.new()
-	_stick.joystick_mode = VirtualJoystick.JOYSTICK_FOLLOWING
+	_stick.joystick_mode = VirtualJoystick.JOYSTICK_FIXED
 	_stick.joystick_size = STICK_SIZE
 	_stick.tip_size = STICK_SIZE / 2.0
+	_stick.clampzone_ratio = 0.8
+	# gui_input precedes the native pressed signal and supplies its local point.
+	_stick.gui_input.connect(func(event: InputEvent) -> void:
+		if event is InputEventScreenTouch:
+			_stick_point = event.position
+			_stick_canceled = event.canceled)
+	_stick.pressed.connect(func() -> void:
+		var origin := _stick.size * _stick.initial_offset_ratio
+		steer(Touch.compose((_stick_point - origin) / 32.0, _direction)))
+	_stick.released.connect(func(vector: Vector2) -> void:
+		# A press and a drag can both finish before _process samples them.
+		if not _stick_canceled:
+			steer(Touch.compose(vector, _direction))
+		steer(0))
 	_stick.deadzone_ratio = 0.0   # Touch.compose has its own
 	_stick.action_left = STICK_ACTIONS[0]
 	_stick.action_right = STICK_ACTIONS[1]
@@ -137,7 +153,7 @@ func _notification(what: int) -> void:
 			or what == NOTIFICATION_APPLICATION_PAUSED:
 		release_all()
 
-## The stick takes its whole zone: a thumb lands anywhere in it and pulls. On its
+## The stick takes presses on the cross and drags from its fixed centre. On its
 ## side FIRE stands in the middle of the right strip and START small in its far top
 ## corner, well away from FIRE: a thumb brushing it would pause the game. Upright
 ## the three rest on one low row, as on the console's pad: the cross on the left,
@@ -156,6 +172,7 @@ func place(view: Vector2, playing := false) -> void:
 		_stick_centre = zone.get_center()
 		_fire.position = Vector2(buttons.get_center().x, row)
 		_start.position = buttons.end - Vector2(START_TOUCH + 2.0, buttons.size.y - START_TOUCH - 2.0)
+	_stick.initial_offset_ratio = (_stick_centre - zone.position) / zone.size
 	var panels: Array[Rect2] = []
 	if view.y > view.x:
 		panels.append(StageLayout.deck_rect(view, playing))
@@ -181,7 +198,7 @@ func start_text() -> String:
 	return _start_text
 
 ## Where the cross is drawn. It stands still: a thumb may land anywhere in the
-## stick's zone, but a cross jumping under it read as the button running away.
+## cross, but a cross jumping under it read as the button running away.
 func cross_centre() -> Vector2:
 	return _stick_centre
 

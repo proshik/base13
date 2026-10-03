@@ -103,7 +103,7 @@ func _draw() -> void:
 	_capsule(self, start + Vector2(0, 1), START_SIZE + Vector2(6, 6), Color("66665e"))
 	_capsule(self, start, START_SIZE + Vector2(6, 6), SOCKET)
 	_label("FIRE", fire + Vector2(0, FIRE_RADIUS + 12))
-	_label(_start_text, start + Vector2(0, START_SIZE.y / 2 + 5))
+	_label(_start_text, start + Vector2(0, START_SIZE.y / 2 + 10))
 
 func _paint_fire() -> void:
 	var held := _down.has(&"touch_fire")

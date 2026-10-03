@@ -75,11 +75,14 @@ func _move(step: int) -> void:
 
 func _draw() -> void:
 	draw_rect(Rect2(Vector2.ZERO, SCREEN), Color(0, 0, 0))
-	TextPainter.draw_centred(self, _font, "BASE 13", 56)
-	TextPainter.draw_centred(self, _font, "HI %d" % _best, 80)
+	var text_scale := 2 if touch else 1
+	TextPainter.draw_centred(self, _font, "BASE 13", 56, Color.WHITE, text_scale)
+	TextPainter.draw_centred(self, _font, "HI %d" % _best, 80, Color.WHITE, text_scale)
 	var shown := items()
 	for i in shown.size():
-		TextPainter.draw_line(self, _font, shown[i], Vector2i(TEXT_X, FIRST_Y + i * STEP_Y))
+		TextPainter.draw_line(self, _font, shown[i], Vector2i(80 if touch else TEXT_X,
+			FIRST_Y + i * (32 if touch else STEP_Y)),
+			Color.WHITE, text_scale)
 	_draw_cursor()
 	_draw_legend()
 
@@ -109,6 +112,7 @@ func legend_rows() -> Array[String]:
 func _draw_cursor() -> void:
 	var frame := Frames.tank(Types.TankType.PLAYER, 0, Types.Dir.RIGHT, 0)
 	var src := Rect2i((frame % 16) * 16, (frame / 16) * 16, 16, 16)
-	var at := Vector2(TEXT_X + CURSOR_DX, FIRST_Y + _choice * STEP_Y + CURSOR_DY)
+	var at := Vector2((80 if touch else TEXT_X) + CURSOR_DX,
+		FIRST_Y + _choice * (32 if touch else STEP_Y) + (0 if touch else CURSOR_DY))
 	draw_texture_rect_region(_sprites, Rect2(at, Vector2(16, 16)), src)
 
