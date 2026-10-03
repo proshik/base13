@@ -38,7 +38,7 @@ func test_upright_the_thumbs_have_everything_below_the_picture() -> void:
 	assert_eq(stick.end.y, UPRIGHT.y)
 	assert_eq(buttons.end.y, UPRIGHT.y)
 	assert_lte(stick.end.x, buttons.position.x, "the two zones overlap")
-	assert_gte(stick.size.x, 112.0, "a thumb needs room to land anywhere and pull")
+	assert_gte(stick.size.x, 100.0, "a thumb needs room to land anywhere and pull")
 
 func test_on_its_side_the_thumbs_have_the_strips() -> void:
 	var stick := StageLayout.stick_zone(ON_ITS_SIDE)

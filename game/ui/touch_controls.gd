@@ -8,8 +8,8 @@ extends CanvasLayer
 ## so a menu sees a flick of the stick as one press.
 ##
 ## The engine draws neither: its stick is given empty styles and the buttons no
-## texture, and the pixels are drawn here — a cross like the console's pad and two
-## round buttons — so the controls look like the rest of the game.
+## texture. TouchControlArt draws the console panel and animates its surfaces;
+## the hit targets stay in place.
 
 const STICK_ACTIONS := [&"touch_stick_left", &"touch_stick_right",
 	&"touch_stick_up", &"touch_stick_down"]
@@ -20,27 +20,24 @@ const DIRECTION_ACTIONS := {
 ## How far a thumb pulls for a full push, in base pixels, twice over. The stick
 ## follows a thumb pulled past it, so a long pull never sticks at the edge.
 const STICK_SIZE := 64.0
-const CELL := 18                  ## one arm of the drawn cross
-const BUTTON_RADIUS := 26
-const START_RADIUS := 12
+const BUTTON_RADIUS := 30
+const START_RADIUS := 8
 ## Where a touch still counts: a thumb is bigger than the drawing.
-const BUTTON_TOUCH := 34.0
-const START_TOUCH := 20.0
+const BUTTON_TOUCH := 36.0
+const START_TOUCH := 22.0
 const FIRE_TEXT := "FIRE"
 const START_TEXT := "START"
-## In a level the same button pauses it, and says so.
+## The pause menu caption; the physical button keeps its START label.
 const PAUSE_TEXT := "PAUSE"
-const IDLE := Color(1, 1, 1, 0.35)
-const LIT := Color(1.0, 0.85, 0.2, 0.8)
 
-var _font: Texture2D = preload("res://assets/font.png")
 var _start_text := START_TEXT
 var _direction := 0
 var _held := {}                   ## action → true while its button is down
+var _touch_ids: Array[int] = []
 var _stick: VirtualJoystick
 var _fire: TouchScreenButton
 var _start: TouchScreenButton
-var _art: Node2D
+var _art: TouchControlArt
 var _stick_centre := Vector2.ZERO   ## where the cross stands
 
 func _ready() -> void:
@@ -58,9 +55,7 @@ func _ready() -> void:
 	add_child(_stick)
 	_fire = _button(&"touch_fire", true, BUTTON_TOUCH)
 	_start = _button(&"touch_start", false, START_TOUCH)
-	_art = Node2D.new()
-	_art.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
-	_art.draw.connect(_paint)
+	_art = TouchControlArt.new()
 	add_child(_art)
 	place(get_viewport().get_visible_rect().size)
 
@@ -93,39 +88,80 @@ func steer(direction: int) -> void:
 	_direction = direction
 	if direction != 0:
 		_send(DIRECTION_ACTIONS[direction], true)
+	_art.steer(direction)
 
 func _send(action: StringName, pressed: bool) -> void:
-	var event := InputEventAction.new()
-	event.action = action
-	event.pressed = pressed
-	Input.parse_input_event(event)
 	if pressed:
 		_held[action] = true
 	else:
 		_held.erase(action)
+	if _art != null and (action == &"touch_fire" or action == &"touch_start"):
+		_art.press(action, pressed)
+	var event := InputEventAction.new()
+	event.action = action
+	event.pressed = pressed
+	Input.parse_input_event(event)
+
+## A tab can lose its finger without ever seeing the release. The same clearing
+## is used for engine focus changes and for the page's immediate presence events.
+func release_all() -> void:
+	# Release the engine's finger ownership too, or a joystick would keep its old
+	# origin when the first new finger arrives after a tab switch.
+	for index in _touch_ids.duplicate():
+		var release := InputEventScreenTouch.new()
+		release.index = index
+		release.pressed = false
+		release.canceled = true
+		Input.parse_input_event(release)
+	_touch_ids.clear()
+	for action in _held.keys():
+		_send(action, false)
+	_direction = 0
+	for action in STICK_ACTIONS:
+		Input.action_release(action)
 	if _art != null:
-		_art.queue_redraw()
+		_art.steer(0)
+	PressLatch.clear()
+
+func _input(event: InputEvent) -> void:
+	if event is InputEventScreenTouch:
+		if event.pressed:
+			if not _touch_ids.has(event.index):
+				_touch_ids.append(event.index)
+		else:
+			_touch_ids.erase(event.index)
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_APPLICATION_FOCUS_OUT \
+			or what == NOTIFICATION_WM_WINDOW_FOCUS_OUT \
+			or what == NOTIFICATION_APPLICATION_PAUSED:
+		release_all()
 
 ## The stick takes its whole zone: a thumb lands anywhere in it and pulls. On its
 ## side FIRE stands in the middle of the right strip and START small in its far top
 ## corner, well away from FIRE: a thumb brushing it would pause the game. Upright
 ## the three rest on one low row, as on the console's pad: the cross on the left,
 ## START in the middle, FIRE on the right.
-func place(view: Vector2) -> void:
-	var zone := StageLayout.stick_zone(view)
-	var row := StageLayout.thumb_row(view)
-	var buttons := StageLayout.button_zone(view)
+func place(view: Vector2, playing := false) -> void:
+	var zone := StageLayout.stick_zone(view, playing)
+	var row := StageLayout.thumb_row(view, playing)
+	var buttons := StageLayout.button_zone(view, playing)
 	_stick.position = zone.position
 	_stick.size = zone.size
 	if view.y > view.x:
-		_stick_centre = Vector2(zone.get_center().x, row)
-		_fire.position = Vector2(buttons.end.x - BUTTON_TOUCH - 6.0, row)
-		_start.position = Vector2(buttons.position.x + START_TOUCH + 4.0, row + 10.0)
+		_stick_centre = Vector2(view.x * 0.19, row)
+		_fire.position = Vector2(view.x * 0.81, row)
+		_start.position = Vector2(view.x / 2, row)
 	else:
 		_stick_centre = zone.get_center()
 		_fire.position = Vector2(buttons.get_center().x, row)
 		_start.position = buttons.end - Vector2(START_TOUCH + 2.0, buttons.size.y - START_TOUCH - 2.0)
-	_art.queue_redraw()
+	var panels: Array[Rect2] = []
+	if view.y > view.x:
+		panels.append(StageLayout.deck_rect(view, playing))
+	else:
+		panels.assign([zone, buttons])
+	_art.place(_stick_centre, _fire.position, _start.position, panels)
 
 func stick_rect() -> Rect2:
 	return Rect2(_stick.position, _stick.size)
@@ -139,7 +175,7 @@ func start_centre() -> Vector2:
 func set_start_text(text: String) -> void:
 	_start_text = text
 	if _art != null:
-		_art.queue_redraw()
+		_art.set_start_text(text)
 
 func start_text() -> String:
 	return _start_text
@@ -151,37 +187,3 @@ func cross_centre() -> Vector2:
 
 func stick_rest() -> Vector2:
 	return _stick_centre
-
-func _paint() -> void:
-	_cross(_stick_centre)
-	_disc(_fire.position, BUTTON_RADIUS, LIT if _held.has(&"touch_fire") else IDLE)
-	_disc(_start.position, START_RADIUS, LIT if _held.has(&"touch_start") else IDLE)
-	_label(FIRE_TEXT, _fire.position + Vector2(0, BUTTON_RADIUS + 4))
-	_label(_start_text, _start.position + Vector2(0, START_RADIUS + 4))
-
-## The console's cross: a centre and four arms, the one held lit.
-func _cross(centre: Vector2) -> void:
-	var half := CELL / 2.0
-	_art.draw_rect(Rect2(centre - Vector2(half, half), Vector2(CELL, CELL)), IDLE)
-	for bit in DIRECTION_ACTIONS:
-		var way := Vector2.ZERO
-		match bit:
-			Types.IN_UP:
-				way = Vector2(0, -1)
-			Types.IN_DOWN:
-				way = Vector2(0, 1)
-			Types.IN_LEFT:
-				way = Vector2(-1, 0)
-			Types.IN_RIGHT:
-				way = Vector2(1, 0)
-		var at := centre + way * CELL - Vector2(half, half)
-		_art.draw_rect(Rect2(at, Vector2(CELL, CELL)), LIT if bit == _direction else IDLE)
-
-## A smooth circle: on a phone the layer is drawn at the screen's own resolution,
-## and a circle built of the picture's pixels showed its steps.
-func _disc(centre: Vector2, radius: int, color: Color) -> void:
-	_art.draw_circle(centre, radius, color, true, -1.0, true)
-
-func _label(text: String, top_centre: Vector2) -> void:
-	var at := Vector2i(int(top_centre.x) - TextPainter.width_of(text) / 2, int(top_centre.y))
-	TextPainter.draw_line(_art, _font, text, at, IDLE)

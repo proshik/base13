@@ -27,6 +27,7 @@ var _font: Texture2D = preload("res://assets/font.png")
 var _sprites: Texture2D = preload("res://assets/sprites.png")
 var _kind := Kind.PAUSE
 var _choice := 0
+var _bounds := Rect2(Vector2.ZERO, SCREEN)
 
 func _ready() -> void:
 	texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
@@ -42,15 +43,20 @@ func set_choice(index: int) -> void:
 	_choice = index
 	queue_redraw()
 
+func set_bounds(bounds: Rect2) -> void:
+	_bounds = bounds
+	queue_redraw()
+
 func _draw() -> void:
 	var asking := _kind == Kind.LEAVE
-	draw_rect(Rect2(Vector2.ZERO, SCREEN), ASKING_VEIL if asking else VEIL)
-	TextPainter.draw_centred(self, _font, "LEAVE MATCH" if asking else "PAUSE", 100)
+	var offset := Vector2i(_bounds.get_center() - SCREEN / 2.0)
+	draw_rect(_bounds, ASKING_VEIL if asking else VEIL)
+	TextPainter.draw_centred(self, _font, "LEAVE MATCH" if asking else "PAUSE", 100 + offset.y)
 	for i in ITEMS.size():
-		TextPainter.draw_line(self, _font, ITEMS[i], Vector2i(TEXT_X, FIRST_Y + i * STEP_Y),
+		TextPainter.draw_line(self, _font, ITEMS[i], Vector2i(TEXT_X, FIRST_Y + i * STEP_Y) + offset,
 			Color.WHITE if i == _choice else HINT_TINT)
 	# The cursor is a tank, as on the title menu.
 	var frame := Frames.tank(Types.TankType.PLAYER, 0, Types.Dir.RIGHT, 0)
 	var src := Rect2i((frame % 16) * 16, (frame / 16) * 16, 16, 16)
-	var at := Vector2(TEXT_X - 22, FIRST_Y + _choice * STEP_Y - 4)
+	var at := Vector2(TEXT_X - 22, FIRST_Y + _choice * STEP_Y - 4) + Vector2(offset)
 	draw_texture_rect_region(_sprites, Rect2(at, Vector2(16, 16)), src)

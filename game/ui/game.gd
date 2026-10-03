@@ -47,6 +47,7 @@ var _input: InputSource = LocalInput.new()
 @onready var _audio: Audio = $Audio
 @onready var _pause: PauseOverlay = $Pause
 var _stats: NetStats = null
+var _touch_layout := false
 
 func _ready() -> void:
 	_field.position = FIELD_ORIGIN
@@ -91,6 +92,7 @@ func _begin_level() -> void:
 	_sim = GameSim.new(level, _campaign.level_seed(), SimConfig.new(),
 		_campaign.level_number, _campaign.slots.size(), _campaign.carryover())
 	_match = NetMatch.new(_sim, _input)
+	_hud.show_model(ViewModel.hud(_sim.get_state()))
 	_end_tick = -1
 	# The last level's outro may have left a press behind.
 	PressLatch.clear()
@@ -103,7 +105,24 @@ func _begin_level() -> void:
 ## The grey around the field, as on the console: on black alone the field had no
 ## edge, and a tank stopped short of nothing anyone could see.
 func _draw() -> void:
-	draw_rect(Rect2(Vector2.ZERO, SCREEN), HudPanel.BACKGROUND)
+	var size := StageLayout.MOBILE_GAME if _touch_layout else SCREEN
+	draw_rect(Rect2(Vector2.ZERO, size), HudPanel.BACKGROUND)
+
+## Only the touch root calls this: the native and browser desktop keep the scene's
+## original geometry. Field, captions and HUD share a uniform outer scale.
+func layout_touch(view: Vector2) -> void:
+	_touch_layout = true
+	var frame := StageLayout.game_rect(view)
+	position = frame.position
+	scale = Vector2.ONE * (frame.size.x / StageLayout.MOBILE_GAME.x)
+	_field.position = Vector2(8, 8)
+	_field.scale = Vector2.ONE * (240.0 / 208.0)
+	_hud.position = Vector2(0, 256)
+	_hud.set_horizontal(true)
+	var field_rect := Rect2(8, 8, 240, 240)
+	_banner.set_bounds(field_rect)
+	_pause.set_bounds(field_rect)
+	queue_redraw()
 
 func _unhandled_input(event: InputEvent) -> void:
 	var key := event as InputEventKey

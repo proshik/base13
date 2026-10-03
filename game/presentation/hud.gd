@@ -15,13 +15,21 @@ const TEXT_LEFT := 4
 
 var _font: Texture2D = preload("res://assets/font.png")
 var _model: ViewModel.Hud = null
+var _horizontal := false
 
 func show_model(model: ViewModel.Hud) -> void:
 	_model = model
 	queue_redraw()
 
+func set_horizontal(value: bool) -> void:
+	_horizontal = value
+	queue_redraw()
+
 func _draw() -> void:
 	if _model == null:
+		return
+	if _horizontal:
+		_draw_row()
 		return
 	draw_rect(Rect2(Vector2.ZERO, PANEL_SIZE), BACKGROUND)
 	TextPainter.draw_line(self, _font, "ENEMY", Vector2i(TEXT_LEFT, 8))
@@ -33,3 +41,19 @@ func _draw() -> void:
 		row += 32
 	TextPainter.draw_line(self, _font, "STAGE", Vector2i(TEXT_LEFT, row + 8))
 	TextPainter.draw_line(self, _font, str(_model.level), Vector2i(TEXT_LEFT, row + 18))
+
+## Keep both lives in co-op. The row has three groups with a measured gap, rather
+## than a fixed column that clips a large stage number or a second player.
+func _draw_row() -> void:
+	draw_rect(Rect2(0, 0, 256, 32), BACKGROUND)
+	var enemies := "ENEMY %d" % _model.enemies_left
+	var lives: Array[String] = []
+	for i in _model.lives.size():
+		lives.append("%dP %d" % [i + 1, _model.lives[i]])
+	var players := "  ".join(lives)
+	var stage := "STAGE %d" % _model.level
+	var right := 248 - TextPainter.width_of(stage)
+	var middle := (256 - TextPainter.width_of(players)) / 2
+	TextPainter.draw_line(self, _font, enemies, Vector2i(8, 8))
+	TextPainter.draw_line(self, _font, players, Vector2i(middle, 8))
+	TextPainter.draw_line(self, _font, stage, Vector2i(right, 8))

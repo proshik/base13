@@ -76,6 +76,43 @@ func test_upright_stick_start_and_fire_are_one_row() -> void:
 	assert_false(controls.stick_rect().has_point(controls.start_centre()),
 		"a touch on START would take the stick")
 
+func test_upright_start_is_centred_and_the_thumbs_are_symmetric() -> void:
+	for view in [Vector2(256, 556), Vector2(256, 420)]:
+		controls.place(view)
+		assert_eq(controls.start_centre().x, view.x / 2.0)
+		assert_eq(controls.start_centre().y, controls.fire_centre().y)
+		assert_almost_eq(controls.cross_centre().x + controls.fire_centre().x, view.x, 0.01)
+
+func test_a_button_depresses_holds_and_returns_without_moving_its_hit_area() -> void:
+	var fire := controls.find_child("FireSurface", true, false) as Node2D
+	assert_not_null(fire, "the visible button needs its own surface")
+	if fire == null:
+		return
+	var button := controls.find_children("*", "TouchScreenButton", true, false)[0] as TouchScreenButton
+	var rest := fire.position
+	var hit := button.position
+	button.pressed.emit()
+	await get_tree().create_timer(0.12).timeout
+	assert_gt(fire.position.y, rest.y, "the surface did not go down")
+	assert_eq(button.position, hit, "the touch target moved with the surface")
+	assert_true(Input.is_action_pressed(&"touch_fire"))
+	await get_tree().create_timer(0.12).timeout
+	assert_gt(fire.position.y, rest.y, "a held button sprang back")
+	button.released.emit()
+	await get_tree().create_timer(0.25).timeout
+	assert_almost_eq(fire.position.y, rest.y, 0.01)
+	assert_false(Input.is_action_pressed(&"touch_fire"))
+
+func test_losing_focus_releases_the_stick_fire_and_start() -> void:
+	controls.steer(Types.IN_LEFT)
+	for button in controls.find_children("*", "TouchScreenButton", true, false):
+		button.pressed.emit()
+	Input.flush_buffered_events()
+	controls.notification(Node.NOTIFICATION_APPLICATION_FOCUS_OUT)
+	Input.flush_buffered_events()
+	assert_eq(Touch.bits(), 0, "the tank would keep moving or firing")
+	assert_false(Input.is_action_pressed(&"touch_start"))
+
 func test_the_stick_takes_its_whole_strip() -> void:
 	# A thumb lands anywhere in the strip and pulls; there is no spot to hit.
 	controls.place(Vector2(256, 556))

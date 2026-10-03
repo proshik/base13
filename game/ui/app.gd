@@ -161,9 +161,13 @@ func _relayout() -> void:
 		return
 	var view := get_viewport().get_visible_rect().size
 	var screen := _current as Node2D
+	var playing := _screen == ScreenFlow.Screen.GAME
 	if screen != null:
-		screen.position = Vector2(StageLayout.picture_at(view))
-	_touch.place(view)
+		if playing:
+			screen.layout_touch(view)
+		else:
+			screen.position = Vector2(StageLayout.picture_at(view))
+	_touch.place(view, playing)
 
 func _input(event: InputEvent) -> void:
 	if _wants_fullscreen and event is InputEventScreenTouch and event.pressed:
@@ -219,9 +223,8 @@ func _show(screen: int, skipped := 0) -> void:
 	if _touch != null:
 		_touch.set_start_text(start_label(screen))
 
-static func start_label(screen: int) -> String:
-	return TouchControls.PAUSE_TEXT if screen == ScreenFlow.Screen.GAME \
-		else TouchControls.START_TEXT
+static func start_label(_screen_id: int) -> String:
+	return TouchControls.START_TEXT
 
 ## The service worker serves the game from its own cache, and a new release it
 ## finds only waits beside it until every window of the game is closed — on a
@@ -264,6 +267,8 @@ func _drop_link() -> void:
 ## server as well as to the console: it is what tells a player looking elsewhere
 ## from a lag. Outside a network game there is nobody to tell.
 func _on_presence(what: String) -> void:
+	if _touch != null and (what == "hidden" or what == "blur"):
+		_touch.release_all()
 	if _link == null:
 		return
 	print("[net] " + what)
