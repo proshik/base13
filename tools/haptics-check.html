@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Проверка отдачи — BASE 13</title>
+  <style>
+    :root { color-scheme: dark; font-family: -apple-system, system-ui, sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #20201e; color: #eee9df; }
+    main { max-width: 480px; margin: auto; padding: 24px 20px 36px; }
+    h1 { font-size: 26px; margin: 0 0 12px; }
+    h2 { font-size: 19px; margin: 0 0 12px; }
+    p { line-height: 1.5; margin: 12px 0; }
+    section { margin-top: 20px; padding: 18px; background: #30302e; border-radius: 16px; }
+    .status, .intro { color: #c7c2b7; font-size: 15px; }
+    .status { min-height: 24px; }
+    button { width: 100%; padding: 14px; border: 1px solid #77756e; border-radius: 12px;
+      background: #45453f; color: inherit; font: inherit; touch-action: manipulation; }
+    button:active { background: #5a5a51; transform: translateY(2px); }
+    .native-row { display: flex; align-items: center; gap: 16px; min-height: 48px; }
+    .native-row input { margin: 0; }
+    .fire-target { display: block; position: relative; width: 112px; height: 112px;
+      margin: 16px auto; border-radius: 50%; overflow: hidden; background: #d85242;
+      border: 5px solid #1a1a19; box-shadow: inset 0 0 0 2px #ec7566; }
+    .fire-target input { position: absolute; inset: 0; width: 100%; height: 100%;
+      margin: 0; opacity: 0; cursor: pointer; touch-action: manipulation; }
+    .fire-target span { position: absolute; inset: 0; display: grid; place-items: center;
+      pointer-events: none; font-weight: 700; letter-spacing: 1px; }
+    .fire-target:active { transform: translateY(2px); background: #bc4234; }
+    a { color: #eee9df; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Проверка отдачи</h1>
+  <p class="intro">Открой эту страницу сначала в Safari, затем в Chrome на iPhone.
+    Попробуй каждую проверку несколько раз. Обрати внимание: толчок ощущается при
+    касании или когда отпускаешь палец?</p>
+
+  <section>
+    <h2>1. Системный переключатель</h2>
+    <p>Нажми сам переключатель. Есть лёгкий толчок?</p>
+    <div class="native-row">
+      <input id="native" type="checkbox" switch aria-label="Проверить системный переключатель">
+      <label for="native">Включить / выключить</label>
+    </div>
+    <p id="native-status" class="status" aria-live="polite">Ещё не нажимали.</p>
+  </section>
+
+  <section>
+    <h2>2. Кнопка FIRE</h2>
+    <p>Здесь тот же системный переключатель поверх красной кнопки. Нажми FIRE,
+      затем попробуй нажать и подержать палец.</p>
+    <label class="fire-target">
+      <input id="fire-switch" type="checkbox" switch aria-label="Проверить отдачу кнопки FIRE">
+      <span aria-hidden="true">FIRE</span>
+    </label>
+    <p id="fire-status" class="status" aria-live="polite">Ещё не нажимали.</p>
+  </section>
+
+  <section>
+    <h2>3. Вызов из другой кнопки</h2>
+    <p>Эта кнопка переключит первый переключатель через скрипт.
+      Сравни ощущения с проверкой 1.</p>
+    <button id="script-press" type="button">Переключить через скрипт</button>
+  </section>
+
+  <section>
+    <h2>4. Обычная вибрация браузера</h2>
+    <p id="api-status" class="status"></p>
+    <button id="vibrate" type="button">Короткая вибрация</button>
+    <p id="vibrate-status" class="status" aria-live="polite">Ещё не нажимали.</p>
+  </section>
+
+  <p class="intro">Надписи подтверждают обработку касания, но не наличие вибрации.
+    Ощущение нужно проверить рукой. Это отдельная проверка: игра не изменена.</p>
+  <p><a href="/">Вернуться в игру</a></p>
+</main>
+<script>
+  const native = document.querySelector('#native');
+  for (const [selector, statusSelector] of [['#native', '#native-status'], ['#fire-switch', '#fire-status']]) {
+    const input = document.querySelector(selector);
+    let count = 0, directTouch = false;
+    // change can be trusted even after a scripted .click(); inspect the click.
+    input.addEventListener('click', event => { directTouch = event.isTrusted; });
+    input.addEventListener('change', () => {
+      count++;
+      document.querySelector(statusSelector).textContent =
+        `${directTouch ? 'Настоящее касание' : 'Вызов из скрипта'} · переключений: ${count}`;
+    });
+  }
+  document.querySelector('#script-press').addEventListener('click', () => native.click());
+  document.querySelector('#api-status').textContent = typeof navigator.vibrate === 'function'
+    ? 'Браузер предоставляет доступ к вибрации.' : 'Браузер не предоставляет доступ к вибрации.';
+  document.querySelector('#vibrate').addEventListener('click', () => {
+    const status = document.querySelector('#vibrate-status');
+    if (typeof navigator.vibrate !== 'function') {
+      status.textContent = 'Этот браузер не поддерживает обычную вибрацию.';
+      return;
+    }
+    try {
+      status.textContent = navigator.vibrate(30)
+        ? 'Запрос принят. Почувствовал толчок?' : 'Браузер отклонил запрос вибрации.';
+    } catch {
+      status.textContent = 'Браузер не разрешил вызвать вибрацию.';
+    }
+  });
+</script>
+</body>
+</html>
