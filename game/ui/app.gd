@@ -137,6 +137,10 @@ func _toggle_fullscreen() -> void:
 func _fit_touch() -> void:
 	var root := get_tree().root
 	root.content_scale_stretch = Window.CONTENT_SCALE_STRETCH_FRACTIONAL
+	# Drawn at the screen's own resolution rather than at the picture's and then
+	# stretched: stretched by a fraction, the picture's pixels came out of unequal
+	# width and every edge stepped. The sprites stay pixel art, with sharp edges.
+	root.content_scale_mode = Window.CONTENT_SCALE_MODE_CANVAS_ITEMS
 	# The engine grows the viewport along whichever side the window has to spare:
 	# down when the phone is upright, across when it lies on its side. Switched by
 	# hand on every resize instead, it was laid out once against a window size
@@ -212,6 +216,12 @@ func _show(screen: int, skipped := 0) -> void:
 	if screen == ScreenFlow.Screen.GAMEOVER:
 		_save_record()
 	_take_update()
+	if _touch != null:
+		_touch.set_start_text(start_label(screen))
+
+static func start_label(screen: int) -> String:
+	return TouchControls.PAUSE_TEXT if screen == ScreenFlow.Screen.GAME \
+		else TouchControls.START_TEXT
 
 ## The service worker serves the game from its own cache, and a new release it
 ## finds only waits beside it until every window of the game is closed — on a

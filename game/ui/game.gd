@@ -10,6 +10,7 @@ extends Node2D
 
 signal finished(outcome: int)
 
+const SCREEN := Vector2(256, 240)
 const FIELD_ORIGIN := Vector2i(8, 16)
 const INTRO_SECONDS := 2.0
 ## The last explosion burns out over this many ticks. Counted in ticks rather than
@@ -98,6 +99,11 @@ func _begin_level() -> void:
 	_banner.show_text("STAGE %d" % _campaign.level_number)
 	_phase = Phase.INTRO
 	_timer = INTRO_SECONDS
+
+## The grey around the field, as on the console: on black alone the field had no
+## edge, and a tank stopped short of nothing anyone could see.
+func _draw() -> void:
+	draw_rect(Rect2(Vector2.ZERO, SCREEN), HudPanel.BACKGROUND)
 
 func _unhandled_input(event: InputEvent) -> void:
 	var key := event as InputEventKey

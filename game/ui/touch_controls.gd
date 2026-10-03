@@ -28,19 +28,20 @@ const BUTTON_TOUCH := 34.0
 const START_TOUCH := 20.0
 const FIRE_TEXT := "FIRE"
 const START_TEXT := "START"
+## In a level the same button pauses it, and says so.
+const PAUSE_TEXT := "PAUSE"
 const IDLE := Color(1, 1, 1, 0.35)
 const LIT := Color(1.0, 0.85, 0.2, 0.8)
 
 var _font: Texture2D = preload("res://assets/font.png")
+var _start_text := START_TEXT
 var _direction := 0
 var _held := {}                   ## action → true while its button is down
 var _stick: VirtualJoystick
 var _fire: TouchScreenButton
 var _start: TouchScreenButton
 var _art: Node2D
-var _stick_centre := Vector2.ZERO   ## where the cross rests
-var _stick_at := Vector2.ZERO       ## where it is drawn: under the thumb while held
-var _stick_finger := -1             ## the touch holding the stick, -1 for none
+var _stick_centre := Vector2.ZERO   ## where the cross stands
 
 func _ready() -> void:
 	_stick = VirtualJoystick.new()
@@ -124,22 +125,7 @@ func place(view: Vector2) -> void:
 		_stick_centre = zone.get_center()
 		_fire.position = Vector2(buttons.get_center().x, row)
 		_start.position = buttons.end - Vector2(START_TOUCH + 2.0, buttons.size.y - START_TOUCH - 2.0)
-	if _stick_finger < 0:
-		_stick_at = _stick_centre
 	_art.queue_redraw()
-
-## The cross is drawn where the thumb came down, so it shows what it steers by.
-func _input(event: InputEvent) -> void:
-	var touch := event as InputEventScreenTouch
-	if touch != null:
-		if touch.pressed and _stick_finger < 0 and stick_rect().has_point(touch.position):
-			_stick_finger = touch.index
-			_stick_at = touch.position
-			_art.queue_redraw()
-		elif not touch.pressed and touch.index == _stick_finger:
-			_stick_finger = -1
-			_stick_at = _stick_centre
-			_art.queue_redraw()
 
 func stick_rect() -> Rect2:
 	return Rect2(_stick.position, _stick.size)
@@ -150,16 +136,28 @@ func fire_centre() -> Vector2:
 func start_centre() -> Vector2:
 	return _start.position
 
-## Where the cross is drawn while no thumb holds it.
+func set_start_text(text: String) -> void:
+	_start_text = text
+	if _art != null:
+		_art.queue_redraw()
+
+func start_text() -> String:
+	return _start_text
+
+## Where the cross is drawn. It stands still: a thumb may land anywhere in the
+## stick's zone, but a cross jumping under it read as the button running away.
+func cross_centre() -> Vector2:
+	return _stick_centre
+
 func stick_rest() -> Vector2:
 	return _stick_centre
 
 func _paint() -> void:
-	_cross(_stick_at)
+	_cross(_stick_centre)
 	_disc(_fire.position, BUTTON_RADIUS, LIT if _held.has(&"touch_fire") else IDLE)
 	_disc(_start.position, START_RADIUS, LIT if _held.has(&"touch_start") else IDLE)
 	_label(FIRE_TEXT, _fire.position + Vector2(0, BUTTON_RADIUS + 4))
-	_label(START_TEXT, _start.position + Vector2(0, START_RADIUS + 4))
+	_label(_start_text, _start.position + Vector2(0, START_RADIUS + 4))
 
 ## The console's cross: a centre and four arms, the one held lit.
 func _cross(centre: Vector2) -> void:
@@ -179,12 +177,10 @@ func _cross(centre: Vector2) -> void:
 		var at := centre + way * CELL - Vector2(half, half)
 		_art.draw_rect(Rect2(at, Vector2(CELL, CELL)), LIT if bit == _direction else IDLE)
 
-## A filled circle out of whole-pixel rows: an antialiased one would be the only
-## smooth edge in the game.
+## A smooth circle: on a phone the layer is drawn at the screen's own resolution,
+## and a circle built of the picture's pixels showed its steps.
 func _disc(centre: Vector2, radius: int, color: Color) -> void:
-	for dy in range(-radius, radius + 1):
-		var half := int(sqrt(float(radius * radius - dy * dy)))
-		_art.draw_rect(Rect2(centre.x - half, centre.y + dy, half * 2 + 1, 1), color)
+	_art.draw_circle(centre, radius, color, true, -1.0, true)
 
 func _label(text: String, top_centre: Vector2) -> void:
 	var at := Vector2i(int(top_centre.x) - TextPainter.width_of(text) / 2, int(top_centre.y))

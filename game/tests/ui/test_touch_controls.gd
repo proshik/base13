@@ -81,8 +81,30 @@ func test_the_stick_takes_its_whole_strip() -> void:
 	controls.place(Vector2(256, 556))
 	assert_eq(controls.stick_rect(), StageLayout.stick_zone(Vector2(256, 556)))
 
+func test_a_touch_does_not_move_the_cross() -> void:
+	# The cross once jumped under the thumb; it reads as the button running away.
+	controls.place(Vector2(256, 556))
+	var rest := controls.cross_centre()
+	var touch := InputEventScreenTouch.new()
+	touch.position = controls.stick_rect().position + Vector2(10, 10)
+	touch.pressed = true
+	Input.parse_input_event(touch)
+	Input.flush_buffered_events()
+	await get_tree().process_frame
+	assert_eq(controls.cross_centre(), rest)
+	touch.pressed = false
+	Input.parse_input_event(touch)
+	Input.flush_buffered_events()
+
+func test_start_says_what_it_does() -> void:
+	controls.set_start_text(TouchControls.PAUSE_TEXT)
+	assert_eq(controls.start_text(), "PAUSE")
+	controls.set_start_text(TouchControls.START_TEXT)
+	assert_eq(controls.start_text(), "START")
+
 func test_the_labels_can_be_drawn() -> void:
-	for text in [TouchControls.FIRE_TEXT, TouchControls.START_TEXT, RotateHint.TEXT]:
+	for text in [TouchControls.FIRE_TEXT, TouchControls.START_TEXT, TouchControls.PAUSE_TEXT,
+			RotateHint.TEXT]:
 		for i in text.length():
 			if text[i] == " ":
 				continue
