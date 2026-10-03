@@ -46,6 +46,8 @@ func _ready() -> void:
 	if _wants_selftest():
 		_run_selftest()
 		return
+	if OS.has_feature("web"):
+		JavaScriptBridge.pwa_update_available.connect(_take_update)
 	_room_code = RoomLink.code_in(RelayConfig.page_url())
 	if _room_code != "":
 		_screen = ScreenFlow.Screen.NET
@@ -135,6 +137,12 @@ func _toggle_fullscreen() -> void:
 func _fit_touch() -> void:
 	var root := get_tree().root
 	root.content_scale_stretch = Window.CONTENT_SCALE_STRETCH_FRACTIONAL
+	# The engine grows the viewport along whichever side the window has to spare:
+	# down when the phone is upright, across when it lies on its side. Switched by
+	# hand on every resize instead, it was laid out once against a window size
+	# that was already gone, and on an iPhone the picture took three quarters of
+	# the width.
+	root.content_scale_aspect = Window.CONTENT_SCALE_ASPECT_EXPAND
 	# Beyond the picture was the engine's letterbox; now it is the clear colour.
 	RenderingServer.set_default_clear_color(Color.BLACK)
 	_touch = TouchControls.new()
@@ -146,16 +154,6 @@ func _fit_touch() -> void:
 
 func _relayout() -> void:
 	if _touch == null:
-		return
-	var root := get_tree().root
-	var aspect := Window.CONTENT_SCALE_ASPECT_KEEP_WIDTH \
-		if StageLayout.portrait(DisplayServer.window_get_size()) \
-		else Window.CONTENT_SCALE_ASPECT_KEEP_HEIGHT
-	if root.content_scale_aspect != aspect:
-		# Not from inside the window's own resize: changed there, the viewport kept
-		# the size of the old aspect and stretched it to the new one. The change
-		# resizes the viewport again, and that lays it out.
-		root.set_deferred("content_scale_aspect", aspect)
 		return
 	var view := get_viewport().get_visible_rect().size
 	var screen := _current as Node2D
@@ -213,6 +211,18 @@ func _show(screen: int, skipped := 0) -> void:
 	_current.finished.connect(_on_finished)
 	if screen == ScreenFlow.Screen.GAMEOVER:
 		_save_record()
+	_take_update()
+
+## The service worker serves the game from its own cache, and a new release it
+## finds only waits beside it until every window of the game is closed — on a
+## phone that keeps the game on its home screen, until it is next swiped away.
+## So the page asks for it, and reloads into it, where a reload loses nothing.
+func _take_update() -> void:
+	if OS.has_feature("web") and update_moment(_screen) and JavaScriptBridge.pwa_needs_update():
+		JavaScriptBridge.pwa_update()
+
+static func update_moment(screen: int) -> bool:
+	return screen == ScreenFlow.Screen.SPLASH or screen == ScreenFlow.Screen.MENU
 
 ## The high score is written when the game-over screen is shown, not when it is
 ## dismissed: the window may be closed right on it, and "NEW RECORD" on screen

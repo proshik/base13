@@ -14,9 +14,12 @@ const TOP_MARGIN := 16
 ## Upright, the least height the controls need below the picture: a shorter
 ## window gives up the margin first.
 const CONTROLS_MIN := 160
-## Upright, the stick's share of the width below the picture: a little over half,
-## since a thumb pulls across it and only taps the buttons.
-const STICK_SHARE := 0.55
+## Upright, the stick's share of the width below the picture. The rest holds START
+## in the middle and FIRE on the right, as on the console's pad.
+const STICK_SHARE := 0.45
+## Upright, how high above the bottom the thumbs rest: a phone held upright is held
+## by its bottom half.
+const ROW_FROM_BOTTOM := 56.0
 
 static func offset_x(viewport_width: float) -> int:
 	return maxi(0, (int(viewport_width) - BASE.x) / 2)
@@ -47,6 +50,15 @@ static func button_zone(view: Vector2) -> Rect2:
 		return Rect2(left, 0, view.x - left, view.y)
 	var stick := stick_zone(view)
 	return Rect2(stick.end.x, stick.position.y, view.x - stick.end.x, stick.size.y)
+
+## The height the cross and the buttons rest at. On its side, a little below the
+## middle of the strips; upright, low, where the thumbs already are — but never so
+## low on a short window that a control leaves the space below the picture.
+static func thumb_row(view: Vector2) -> float:
+	if not _upright(view):
+		return view.y * 0.6
+	var zone := stick_zone(view)
+	return maxf(view.y - ROW_FROM_BOTTOM, zone.position.y + zone.size.y / 2.0)
 
 ## A viewport is upright when it kept the picture's width and grew down.
 static func _upright(view: Vector2) -> bool:

@@ -63,6 +63,19 @@ func test_start_is_well_away_from_fire() -> void:
 		assert_gt(gap, TouchControls.BUTTON_TOUCH + TouchControls.START_TOUCH + 8.0,
 			"FIRE and START too close at %s" % view)
 
+func test_upright_stick_start_and_fire_are_one_row() -> void:
+	# As on the console's pad: the cross on the left, START in the middle, FIRE on
+	# the right, all where the thumbs rest.
+	var view := Vector2(256, 556)
+	controls.place(view)
+	var row := StageLayout.thumb_row(view)
+	assert_eq(controls.stick_rest().y, row)
+	assert_eq(controls.fire_centre().y, row)
+	assert_lt(controls.stick_rest().x, controls.start_centre().x)
+	assert_lt(controls.start_centre().x, controls.fire_centre().x)
+	assert_false(controls.stick_rect().has_point(controls.start_centre()),
+		"a touch on START would take the stick")
+
 func test_the_stick_takes_its_whole_strip() -> void:
 	# A thumb lands anywhere in the strip and pulls; there is no spot to hit.
 	controls.place(Vector2(256, 556))

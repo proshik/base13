@@ -105,19 +105,27 @@ func _send(action: StringName, pressed: bool) -> void:
 	if _art != null:
 		_art.queue_redraw()
 
-## The stick takes its whole zone: a thumb lands anywhere in it and pulls. FIRE
-## stands in the middle of its zone, START small in the zone's far top corner,
-## well away from FIRE: a thumb brushing it would pause the game.
+## The stick takes its whole zone: a thumb lands anywhere in it and pulls. On its
+## side FIRE stands in the middle of the right strip and START small in its far top
+## corner, well away from FIRE: a thumb brushing it would pause the game. Upright
+## the three rest on one low row, as on the console's pad: the cross on the left,
+## START in the middle, FIRE on the right.
 func place(view: Vector2) -> void:
 	var zone := StageLayout.stick_zone(view)
+	var row := StageLayout.thumb_row(view)
+	var buttons := StageLayout.button_zone(view)
 	_stick.position = zone.position
 	_stick.size = zone.size
-	_stick_centre = zone.get_center()
+	if view.y > view.x:
+		_stick_centre = Vector2(zone.get_center().x, row)
+		_fire.position = Vector2(buttons.end.x - BUTTON_TOUCH - 6.0, row)
+		_start.position = Vector2(buttons.position.x + START_TOUCH + 4.0, row + 10.0)
+	else:
+		_stick_centre = zone.get_center()
+		_fire.position = Vector2(buttons.get_center().x, row)
+		_start.position = buttons.end - Vector2(START_TOUCH + 2.0, buttons.size.y - START_TOUCH - 2.0)
 	if _stick_finger < 0:
 		_stick_at = _stick_centre
-	var buttons := StageLayout.button_zone(view)
-	_fire.position = Vector2(buttons.get_center().x, buttons.position.y + buttons.size.y * 0.6)
-	_start.position = buttons.end - Vector2(START_TOUCH + 2.0, buttons.size.y - START_TOUCH - 2.0)
 	_art.queue_redraw()
 
 ## The cross is drawn where the thumb came down, so it shows what it steers by.
@@ -141,6 +149,10 @@ func fire_centre() -> Vector2:
 
 func start_centre() -> Vector2:
 	return _start.position
+
+## Where the cross is drawn while no thumb holds it.
+func stick_rest() -> Vector2:
+	return _stick_centre
 
 func _paint() -> void:
 	_cross(_stick_at)

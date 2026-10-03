@@ -38,7 +38,7 @@ func test_upright_the_thumbs_have_everything_below_the_picture() -> void:
 	assert_eq(stick.end.y, UPRIGHT.y)
 	assert_eq(buttons.end.y, UPRIGHT.y)
 	assert_lte(stick.end.x, buttons.position.x, "the two zones overlap")
-	assert_gte(stick.size.x, 128.0, "a thumb needs room to land anywhere and pull")
+	assert_gte(stick.size.x, 112.0, "a thumb needs room to land anywhere and pull")
 
 func test_on_its_side_the_thumbs_have_the_strips() -> void:
 	var stick := StageLayout.stick_zone(ON_ITS_SIDE)
@@ -49,3 +49,15 @@ func test_on_its_side_the_thumbs_have_the_strips() -> void:
 func test_a_short_upright_window_gives_up_the_margin() -> void:
 	# Safari's bars take height: the controls need it more than the notch does.
 	assert_eq(StageLayout.picture_at(Vector2(256, 400)).y, 0)
+
+func test_upright_the_thumbs_sit_low() -> void:
+	# A phone held upright is held by its bottom half: the controls go where the
+	# thumbs already are, not in the middle of the space below the picture.
+	var row := StageLayout.thumb_row(UPRIGHT)
+	assert_gte(row, UPRIGHT.y - 72.0, "the controls float too high")
+	assert_lt(row, UPRIGHT.y - 32.0, "the controls fall off the bottom")
+
+func test_a_short_upright_window_keeps_the_row_below_the_picture() -> void:
+	var view := Vector2(256, 400)
+	var top := StageLayout.stick_zone(view).position.y
+	assert_gte(StageLayout.thumb_row(view), top + 32.0)
