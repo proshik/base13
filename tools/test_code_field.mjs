@@ -72,8 +72,18 @@ try {
   let point = await target(390);
   await touch(point.x, point.y);
   assert.equal(await evaluate('document.activeElement.id'), 'room-code-field', 'A direct touch must focus the code');
-  // A short code is editable and must not start a connection on Enter.
+  assert.equal(await evaluate('document.getElementById("room-code-field").placeholder'), '', 'Focus must hide TAP HERE');
   await evaluate('document.getElementById("room-code-field").select()');
+  await send('Input.dispatchKeyEvent', {type:'keyDown', key:'Backspace', code:'Backspace', windowsVirtualKeyCode:8});
+  await send('Input.dispatchKeyEvent', {type:'keyUp', key:'Backspace', code:'Backspace', windowsVirtualKeyCode:8});
+  assert.equal(await evaluate('document.getElementById("room-code-field").value'), '', 'Clearing the code leaves only the caret');
+  assert.equal(await evaluate('document.getElementById("room-code-field").placeholder'), '', 'An empty focused field must keep the hint hidden');
+  await evaluate('document.getElementById("room-code-field").blur()');
+  assert.equal(await evaluate('document.getElementById("room-code-field").placeholder'), 'TAP HERE', 'Leaving an empty field restores the cue');
+  await touch(point.x, point.y);
+  assert.equal(await evaluate('document.activeElement.id'), 'room-code-field');
+  assert.equal(await evaluate('document.getElementById("room-code-field").placeholder'), '', 'A second tap hides the cue again');
+  // A short code is editable and must not start a connection on Enter.
   await send('Input.insertText', {text:'AB'});
   await send('Input.dispatchKeyEvent', {type:'keyDown', key:'Enter', code:'Enter', windowsVirtualKeyCode:13});
   await send('Input.dispatchKeyEvent', {type:'keyUp', key:'Enter', code:'Enter', windowsVirtualKeyCode:13});

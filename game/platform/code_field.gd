@@ -71,6 +71,8 @@ const OPEN := """(function (id, text) {
     'z-index:10;box-sizing:border-box;padding:4px;font-weight:bold;font-family:monospace;' +
     'text-align:center;text-transform:uppercase;color:#ffd933;background:#000;' +
     'border:2px solid #fff;border-radius:0;';
+  f.addEventListener('focus', function () { f.placeholder = ''; });
+  f.addEventListener('blur', function () { f.placeholder = 'TAP HERE'; });
   f.addEventListener('input', function () { window.roomCodeInput(f.value); });
   f.addEventListener('keydown', function (e) {
     if (e.key === 'Enter') { e.preventDefault(); window.roomCodeEnter(f.value); }
