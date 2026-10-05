@@ -25,6 +25,7 @@ const FIRST_Y := 88
 const STEP_Y := 18
 const TEXT_X := 72
 const CODE_LEN := 6
+const CODE_RECT := Rect2(32, 108, 192, 32)
 const CODE_SCALE := 3   ## a code gets dictated over the phone — it must read without squinting
 const ADDRESS_MAX := 21
 
@@ -80,6 +81,7 @@ var _shared := ""
 
 func _ready() -> void:
 	texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	get_viewport().size_changed.connect(_place_field)
 
 func configure(_campaign, _players: int, _best: int) -> void:
 	queue_redraw()
@@ -157,6 +159,12 @@ func _open_field() -> void:
 		_field.changed.connect(_on_field_changed)
 		_field.submitted.connect(_on_field_submitted)
 	_field_open = _field.open(_typed)
+	_place_field()
+
+func _place_field() -> void:
+	if _field_open:
+		_field.place(get_global_transform_with_canvas() * CODE_RECT,
+			get_viewport().get_visible_rect().size)
 
 func _close_field() -> void:
 	if _field != null:
@@ -403,7 +411,10 @@ func _draw() -> void:
 			TextPainter.draw_centred(self, _font, _hint("ESC CANCEL", "START CANCEL"), 200, HINT_TINT)
 		Mode.CODE_TYPING:
 			TextPainter.draw_centred(self, _font, "ROOM CODE", 88)
-			TextPainter.draw_centred(self, _font, _typed + "_", 108, CODE_TINT, CODE_SCALE)
+			if _field_open:
+				TextPainter.draw_centred(self, _font, "TAP TO TYPE", 150, HINT_TINT)
+			else:
+				TextPainter.draw_centred(self, _font, _typed + "_", 108, CODE_TINT, CODE_SCALE)
 			TextPainter.draw_centred(self, _font, _hint("ENTER JOIN  ESC BACK", "FIRE JOIN  START BACK"), 200,
 				HINT_TINT)
 		Mode.LAN_WAIT:

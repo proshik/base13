@@ -29,6 +29,14 @@ func open(text: String) -> bool:
 	JavaScriptBridge.eval(OPEN % [JSON.stringify(ID), JSON.stringify(text)])
 	return true
 
+## Follow the code's rectangle in the game, mapped to the page's canvas.
+func place(rect: Rect2, view: Vector2) -> void:
+	if not OS.has_feature("web") or _on_input == null:
+		return
+	JavaScriptBridge.eval(PLACE % [JSON.stringify(ID),
+		JSON.stringify([rect.position.x / view.x, rect.position.y / view.y,
+			rect.size.x / view.x, rect.size.y / view.y])])
+
 func close() -> void:
 	if not OS.has_feature("web") or _on_input == null:
 		return
@@ -53,13 +61,14 @@ const OPEN := """(function (id, text) {
   f.id = id;
   f.value = text;
   f.maxLength = 6;
-  f.placeholder = 'ROOM CODE';
+  f.placeholder = 'TAP HERE';
+  f.setAttribute('aria-label', 'Room code');
   f.autocapitalize = 'characters';
   f.autocomplete = 'off';
   f.spellcheck = false;
   f.enterKeyHint = 'go';
-  f.style.cssText = 'position:fixed;left:50%%;top:12px;transform:translateX(-50%%);' +
-    'z-index:10;width:8em;padding:8px;font:bold 28px monospace;letter-spacing:6px;' +
+  f.style.cssText = 'position:fixed;left:50%%;top:0;transform:translateX(-50%%);' +
+    'z-index:10;box-sizing:border-box;padding:4px;font-weight:bold;font-family:monospace;' +
     'text-align:center;text-transform:uppercase;color:#ffd933;background:#000;' +
     'border:2px solid #fff;border-radius:0;';
   f.addEventListener('input', function () { window.roomCodeInput(f.value); });
@@ -73,3 +82,16 @@ const CLOSE := """(function (id) {
   var f = document.getElementById(id);
   if (f) { f.blur(); f.remove(); }
 })(%s)"""
+
+const PLACE := """(function (id, area) {
+  var f = document.getElementById(id);
+  if (!f) return;
+  var c = document.getElementById('canvas').getBoundingClientRect();
+  var height = area[3] * c.height;
+  f.style.left = (c.left + (area[0] + area[2] / 2) * c.width) + 'px';
+  f.style.top = (c.top + area[1] * c.height) + 'px';
+  f.style.width = (area[2] * c.width) + 'px';
+  f.style.height = height + 'px';
+  f.style.fontSize = (height * 0.62) + 'px';
+  f.style.letterSpacing = (height * 0.07) + 'px';
+})(%s, %s)"""
