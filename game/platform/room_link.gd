@@ -29,14 +29,21 @@ static func url_for(page: String, code: String) -> String:
 	return base + "?" + KEY + "=" + code
 
 ## Hands the link to the phone's share sheet, or copies it where there is none.
-## "shared", "copied", or "" with nothing to do it with. The browser answers later
+## "shared", "copying", or "" with nothing to do it with. The browser answers later
 ## and may say no — a share cancelled, a clipboard refused — and neither is worth a
-## word on screen: the code is right there, large enough to dictate.
+## word on screen: the code is right there, large enough to dictate. LINK COPIED
+## is said only once the clipboard took it: see `copied`.
 static func send(url: String) -> String:
 	if not OS.has_feature("web"):
 		return ""
 	var how = JavaScriptBridge.eval(SEND % JSON.stringify(url), true)
 	return how if typeof(how) == TYPE_STRING else ""
+
+## Whether the clipboard has taken the link `send` was copying.
+static func copied() -> bool:
+	if not OS.has_feature("web"):
+		return false
+	return JavaScriptBridge.eval("window.base13LinkCopied === true", true) == true
 
 const SEND := """(function (url) {
   if (navigator.share) {
@@ -44,8 +51,10 @@ const SEND := """(function (url) {
     return 'shared';
   }
   if (navigator.clipboard) {
-    navigator.clipboard.writeText(url).catch(function () {});
-    return 'copied';
+    window.base13LinkCopied = false;
+    navigator.clipboard.writeText(url).then(function () { window.base13LinkCopied = true; },
+      function () {});
+    return 'copying';
   }
   return '';
 })(%s)"""

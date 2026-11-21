@@ -92,6 +92,9 @@ func _process(delta: float) -> void:
 		_waited += delta
 		if int(_waited) != before:
 			queue_redraw()
+	if _shared == "copying" and RoomLink.copied():
+		_shared = "copied"
+		queue_redraw()
 	if link == null:
 		return
 	link.poll()
