@@ -6,9 +6,12 @@ extends Node
 ## focused inside the tap itself, and the engine reads a tap a frame later, so a
 ## field the game focused would sit there with no keyboard.
 ##
-## What is typed is cleaned on the page before it is cut to six: a pasted
-## `ABC-234` cut first would lose its last character to the dash. The screen
-## cleans it again, as it cleans a key or a link.
+## What is typed loses what no code has before it is cut to six: a pasted
+## `ABC-234` cut first would lose its last character to the dash. The field is
+## written back only when that changed it, with the caret where it was among the
+## characters kept — a value written back puts the caret at the end, and the next
+## letter typed in the middle would land there. Case is left to the CSS and to the
+## screen, which cleans it again as it cleans a key or a link.
 
 signal changed(text: String)
 signal submitted(text: String)
@@ -75,8 +78,13 @@ const OPEN := """(function (id, text) {
   f.addEventListener('focus', function () { f.placeholder = ''; });
   f.addEventListener('blur', function () { f.placeholder = 'TAP HERE'; });
   f.addEventListener('input', function () {
-    var clean = f.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6);
-    if (clean !== f.value) f.value = clean;
+    var keep = function (s) { return s.replace(/[^A-Za-z0-9]/g, ''); };
+    var clean = keep(f.value).slice(0, 6);
+    if (clean !== f.value) {
+      var at = Math.min(keep(f.value.slice(0, f.selectionStart)).length, 6);
+      f.value = clean;
+      f.setSelectionRange(at, at);
+    }
     window.roomCodeInput(f.value);
   });
   f.addEventListener('keydown', function (e) {

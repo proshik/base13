@@ -85,7 +85,14 @@ try {
   assert.equal(await evaluate('document.getElementById("room-code-field").placeholder'), '', 'A second tap hides the cue again');
   // A code pasted with a separator keeps all six characters: cleaned first, cut after.
   await send('Input.insertText', {text:'abc-234'});
-  assert.equal(await evaluate('document.getElementById("room-code-field").value'), 'ABC234', 'A pasted code lost a character');
+  assert.equal(await evaluate('document.getElementById("room-code-field").value').then(v => v.toUpperCase()), 'ABC234', 'A pasted code lost a character');
+  // Replacing letters in the middle keeps the caret there, even when the field is
+  // written back.
+  await evaluate('document.getElementById("room-code-field").setSelectionRange(1, 3)');
+  await send('Input.insertText', {text:'d'});
+  await send('Input.insertText', {text:'-'});
+  await send('Input.insertText', {text:'e'});
+  assert.equal(await evaluate('document.getElementById("room-code-field").value').then(v => v.toUpperCase()), 'ADE234', 'A letter typed in the middle went to the end');
   await evaluate('document.getElementById("room-code-field").select()');
   await send('Input.dispatchKeyEvent', {type:'keyDown', key:'Backspace', code:'Backspace', windowsVirtualKeyCode:8});
   await send('Input.dispatchKeyEvent', {type:'keyUp', key:'Backspace', code:'Backspace', windowsVirtualKeyCode:8});
