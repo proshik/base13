@@ -41,6 +41,7 @@ descriptions, and the level layouts are ours. No Namco/Bandai assets or maps are
 |---|---|
 | Windows, macOS, Linux | builds, plays |
 | Browser | builds, plays |
+| Browser on a phone | plays with touch controls; checked on an iPhone in Safari |
 | Co-op: quick game, room by code, local network | works |
 | Room server and game hosting in one image | works |
 | Public server on the internet | needs a machine with an address — the code is there |
@@ -536,6 +537,30 @@ Security → Local Network.
 None of this fuss will be there once the server moves to a real machine on the internet:
 then both sides dial out, and the local network has nothing to do with it.
 
+### Playing from a phone
+
+The web build plays in a phone's browser. On a touch screen the field sits on top, upright
+or turned, and a panel below it holds a fixed cross on the left, START in the middle and
+FIRE on the right. START pauses; the menu offers `1 PLAYER` and `NETWORK`, and in a
+browser the network screen has no `LAN` entries. A room waiting for its partner shares itself: FIRE opens the
+system's share sheet with a link `https://…/?room=CODE`, and a link like that opens the
+join screen with the code filled in — FIRE joins. A code typed by hand goes into the box
+under `ROOM CODE`: tap it and the system keyboard comes up. Added to the home screen,
+the game starts without the browser's address bar.
+
+The browser runs the game only from a secure origin, so a phone on the same Wi-Fi needs
+https with a certificate it trusts:
+
+```bash
+just phone            # serve build/web over https on this Mac's Wi-Fi address, port 8443
+just phone --build    # build the web version again first
+```
+
+The script prints the address to open and, for the first time only, how to install the
+mkcert root certificate on the iPhone. Type the address with `https://` in full: Safari
+opens an address with a port and no scheme over http, and the TLS server's reply is
+downloaded as `document.txt`.
+
 ## Builds
 
 ```bash
@@ -661,6 +686,10 @@ and downloading them every time takes longer than everything else put together.
   9 tasks, TDD
 - [Homebrew cask plan](docs/plans/2026-09-04-homebrew-cask.md) —
   installation on macOS in one command; after the deployment
+- [Phone browser design](docs/specs/2026-09-28-mobile-web-design.md) —
+  touch controls, the upright layout, room links and the home screen
+- [Phone browser plan](docs/plans/2026-09-28-mobile-web.md) —
+  10 tasks, TDD, and the live checks on an iPhone
 - [AGENTS.md](AGENTS.md) — invariants that must not be broken
 
 ## Legal

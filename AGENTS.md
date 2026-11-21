@@ -24,6 +24,9 @@ Application identifier: `com.proshik.base13`.
 - Metrics plan (closed, shipped in `0.5.0`): `docs/plans/2026-09-14-metrics.md`
 - Rollback design (replaces lockstep in network play): `docs/specs/2026-09-16-rollback-design.md`
 - Rollback plan: `docs/plans/2026-09-16-rollback.md`
+- Phone browser design (touch controls, the upright layout, room links, the home
+  screen): `docs/specs/2026-09-28-mobile-web-design.md`
+- Phone browser plan: `docs/plans/2026-09-28-mobile-web.md`
 
 The work is split into four subprojects: **1** the core and the single-player game,
 **2** mobile platforms, **3** network co-op, **4** release to the stores.
@@ -155,6 +158,10 @@ Screens and the application:
 | `game/ui/app.gd`, `game/app.tscn` | The root: swaps screens, holds the campaign, the window and the high score |
 | `game/ui/splash.gd`, `game/ui/menu.gd`, `game/ui/game.gd`, `game/ui/stats.gd`, `game/ui/gameover.gd` | The five screens |
 | `game/ui/pause.gd` | The pause overlay on top of the game |
+| `game/ui/ui_input.gd` | What a key, a pad button or a touch means to a menu |
+| `game/ui/stage_layout.gd` | Where the picture and the thumbs' controls stand on a touch screen, upright or turned |
+| `game/ui/touch_controls.gd` | The on-screen cross, START and FIRE: the engine's nodes take the fingers and become `touch_*` actions |
+| `game/ui/touch_control_art.gd` | The console panel under the field and its animated surfaces; the hit targets stay still |
 
 Everything that knows about hardware and disk:
 
@@ -168,6 +175,9 @@ Everything that knows about hardware and disk:
 | `game/platform/window_scale.gd` | Picking an integer window scale for the display |
 | `game/platform/client_info.gd` | The platform and version the client names in its hello, and in a browser its family and system |
 | `game/platform/presence.gd` | A tab going out of sight and a window losing focus, as one word each |
+| `game/platform/touch.gd`, `game/platform/touch_device.gd` | The same five bits from the `touch_*` actions; whether this machine is played by touch |
+| `game/platform/code_field.gd` | The page's own text field over the room code, so a phone opens its keyboard |
+| `game/platform/room_link.gd` | A room code in the page address, `?room=`, and the share sheet that sends it |
 
 The network — the general shape of a link and its two incarnations:
 
@@ -202,6 +212,9 @@ Content generators — everything is our own, everything from text sources:
 | `tools/sound_data.py`, `tools/gen_sounds.py` | Fifteen sounds in the style of the NES chip |
 | `tools/gen_levels.py` | Level layouts |
 | `tools/build.sh` | Builds for three platforms |
+| `tools/phone.sh` | `just phone`: the web build over https on this Mac's Wi-Fi address, for a phone |
+| `tools/test_code_field.mjs` | A browser check of the room code field over CDP, against a running web build |
+| `tools/haptics-check.html`, `tools/test_haptics_check.mjs` | The finished experiment with vibration on an iPhone, and its browser check |
 
 There is one way into the simulation: `GameSim.new(level, seed, config, level_number,
 player_count, carryover)` and `tick([bits_p1, bits_p2])` — five bits per player per
@@ -556,6 +569,39 @@ Rakes we have already stepped on:
 - **`go test` caches a result without looking at files outside `server/`.**
   `deploy_test.go` reads `../deploy`, so an edited dashboard would pass on the result from
   before the edit; `tools/test.sh` runs the Go tests with `-count=1`.
+- **mkcert with `JAVA_HOME` set dies on `keytool`** before it writes the certificate:
+  it also checks Java's trust store. `tools/phone.sh` runs it under `env -u JAVA_HOME`.
+- **Safari opens an address with a port and no scheme over http**, the TLS server
+  answers with text, and Safari downloads it as `document.txt`. Type `https://` in full.
+- **Godot's service worker serves the game from its cache** and holds a new version
+  waiting until every window of the game is closed: a reload shows the old build. The
+  splash and the menu ask it for an update and restart into one (`App._take_update`).
+  In an emulated browser, `Network.setBypassServiceWorker` gets around it.
+- **A file served without `Cache-Control` is kept by the browser's own guess** — a tenth
+  of the file's age — and Chrome on an iPhone showed an old build. The server marks every
+  game file `no-cache`; an unchanged one costs a 304.
+- **Switching `content_scale_aspect` in a `size_changed` handler breaks an iPhone**: the
+  viewport stayed computed for the size that had gone and took three quarters of the
+  width. `EXPAND` adapts by itself.
+- **Fractional stretch in `viewport` mode gives pixels of different widths** and stepped
+  circles; a phone needs `canvas_items` mode. A desktop keeps `viewport` at an integer
+  scale.
+- **A black frame around a black field is not seen**: a tank seems to stop against
+  nothing. The field has the NES's grey frame.
+- **Headless `Input.parse_input_event` does not test the stick's GUI** as a real screen
+  does: a touch check of `VirtualJoystick` needs a browser.
+- **iOS opens its keyboard only for a field focused inside the tap itself.** The engine
+  reads a tap a frame later, so a field the game focuses sits with no keyboard: the room
+  code is a real page field, placed exactly where the code is drawn — a drawn code
+  beside a field off at the top of the page left a player tapping the drawing.
+- **A `%` in a script formatted with `%` breaks it**: the code field's CSS `50%` stopped
+  the planned field from opening. Write it `%%`.
+- **Who joined is read from the server's join line, not from what was said.** On
+  2026-11-21 "I joined" from a phone was a Chrome on the Mac: the line read
+  `web (chrome, macos)`, where a phone reads `web_ios (safari, ios)`.
+- **NO SUCH ROOM on a code typed on an iPhone is still unexplained.** The room was alive,
+  the server matches the code exactly, and the client sends only a full six-character
+  code, so some other six characters went out — the log does not say which.
 
 ## Conventions
 
