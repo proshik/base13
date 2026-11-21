@@ -16,7 +16,7 @@ Application identifier: `com.proshik.base13`.
 - Co-op design (stage 3.1): `docs/specs/2026-08-31-lockstep-design.md`
 - Rooms and relay design (stages 3.2–3.3): `docs/specs/2026-09-01-platform-design.md`
 - Quick game and image design (stage 3.4): `docs/specs/2026-09-03-quick-game-design.md`
-- Deployment plan (the image runs at `base13.proshik.ru` since 2026-09-14):
+- Deployment plan (the image runs on a public server since 2026-09-14):
   `docs/plans/2026-09-04-deployment.md`
 - Hardening plan (closed, gates the deployment's release): `docs/plans/2026-09-12-hardening.md`
 - Homebrew cask plan (after the deployment): `docs/plans/2026-09-04-homebrew-cask.md`
@@ -41,10 +41,10 @@ network directly — closed; **3.2** the room server and entry by code — close
 **3.3** the journal and coming back after a drop — closed; **3.4** quick game, static
 hosting and the image — closed.
 
-The game is played over the internet at `https://base13.proshik.ru/`: one container from
-the registry behind the owner's proxy, deployed since 2026-09-14 with Krill as the app
-`side/prod/base13` — a new release goes there by its image tag. TLS and DNS are the
-owner's. A deploy restarts the server and ends every match in progress: the journal lives
+The game is played over the internet on a public server: one container from the registry
+behind the owner's proxy, since 2026-09-14 — a new release goes there by its image tag.
+The server's address and how it is deployed are the owner's and are not kept in this
+repository, which is public. TLS and DNS are the owner's. A deploy restarts the server and ends every match in progress: the journal lives
 in memory. Accounts are deferred — the chosen shape of public play (one button, no list and
 no names) does not require them.
 
