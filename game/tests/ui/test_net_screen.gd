@@ -250,6 +250,7 @@ func test_a_code_is_cleaned() -> void:
 	assert_eq(net.clean_code("A-B_C d"), "ABCD")
 	assert_eq(net.clean_code("AB\nCD"), "ABCD", "a line break is not a character of a code")
 	assert_eq(net.clean_code(""), "")
+	assert_eq(net.clean_code("abc.2:34"), "ABC234", "a dot or a colon is drawable, but no code has one")
 
 func test_a_prefilled_code_waits_for_fire() -> void:
 	net.prefill("abc234")

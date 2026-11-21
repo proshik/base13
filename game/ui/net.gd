@@ -211,14 +211,16 @@ func _act() -> void:
 	queue_redraw()
 
 ## One rule for a code however it came — typed, from the phone's own field, or from a
-## link someone sent: upper case, only what the font draws, six at most. A link is a
-## stranger's text, and it reaches the screen and the server.
+## link someone sent: upper case, letters and digits only, six at most. The font also
+## draws a dot and a colon, but no code has one, and kept they cut a pasted
+## `ABC.234` to `ABC.23`. A link is a stranger's text, and it reaches the screen and
+## the server.
 static func clean_code(text: String) -> String:
 	var out := ""
 	for ch in text.to_upper():
 		if out.length() == CODE_LEN:
 			break
-		if ch != " " and TextPainter.glyph_index(ch) >= 0:
+		if (ch >= "A" and ch <= "Z") or (ch >= "0" and ch <= "9"):
 			out += ch
 	return out
 
