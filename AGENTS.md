@@ -59,9 +59,14 @@ Now every message, journal, room and connection has a ceiling, every read and wr
 deadline, the server pings on its own, and the engine travels gzipped: 9.6 MB instead of
 37.7 on the first visit.
 
-The current release is `0.6.6`, published on 2026-09-24: the image
-`ghcr.io/proshik/base13:0.6.6` (also `latest`) and the desktop builds under the `v0.6.6`
-GitHub release. The `0.6` line carries the rollback — network play no longer waits for the
+The current release is `0.7.0`, published on 2026-11-21: the image
+`ghcr.io/proshik/base13:0.7.0` (also `latest`) and the desktop builds under the `v0.7.0`
+GitHub release. `0.7.0` brings play from a phone's browser: touch controls under an
+upright field or beside a turned one, a room code typed into the page's own field, a room
+shared by link through the system's share sheet, a home-screen install, and every game
+file revalidated so a phone never keeps an old build; a menu over the game keeps its
+buttons out of the tank, and the server log names the code a refused join sent. It
+carries the `0.6` line whole. The `0.6` line carries the rollback — network play no longer waits for the
 partner — and the core it needed, a simulation tick three and a half times cheaper; a
 server whose delay histogram has a bound at two, so it tells a client that steps back from
 one still on `0.5.0`; since `0.6.2`, a client that keeps a partner's stand out of the waits
@@ -81,7 +86,7 @@ line what came at once after the worst gap; and since `0.6.6`, a client that hea
 its level events, a hidden tab and a lost focus — the join line names the release, the
 platform and the browser, the window line carries the last round trip from the first ping
 on seating, and nothing a stranger writes reaches the log as written.
-Earlier `0.6` releases are superseded.
+Earlier releases are superseded.
 The image is built for amd64 only; on an arm64 Mac run it with `--platform linux/amd64`.
 The package is public and pulls without a login. What is left of the deployment plan is a
 machine to put it on; run the image with the metrics port as the plan's Task 4 shows.
