@@ -32,6 +32,25 @@ function send(method, params = {}) {
     socket.send(JSON.stringify({ id, method, params, ...(session ? { sessionId: session } : {}) }));
   });
 }
+async function overlapping() {
+  // Room A's copy answers only after room B's was asked for and refused: B's
+  // screen must not read A's success as its own.
+  const response = await send('Runtime.evaluate', { awaitPromise: true, returnByValue: true, expression: `(async () => {
+    const answers = [];
+    Object.defineProperty(navigator, 'share', { value: undefined, configurable: true });
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: () =>
+      new Promise((resolve, reject) => answers.push({ resolve, reject })) } });
+    ${script};
+    ${script};
+    answers[1].reject();
+    answers[0].resolve();
+    await new Promise(resolve => setTimeout(resolve, 50));
+    return window.base13LinkCopied;
+  })()` });
+  assert.equal(response.exceptionDetails, undefined, 'The share script must run without errors');
+  return response.result.value;
+}
+
 async function copy(answer) {
   const response = await send('Runtime.evaluate', { awaitPromise: true, returnByValue: true, expression: `(async () => {
     Object.defineProperty(navigator, 'share', { value: undefined, configurable: true });
@@ -55,6 +74,7 @@ try {
   const taken = await copy('resolve');
   assert.equal(taken.atOnce, false, 'The link was said to be copied before the clipboard answered');
   assert.equal(taken.later, true, 'An accepted copy was never confirmed');
+  assert.equal(await overlapping(), false, 'An earlier room\'s copy answered for the latest one');
   await send('Target.closeTarget', { targetId });
   console.log('PASS: LINK COPIED only after the clipboard took the link.');
 } finally {

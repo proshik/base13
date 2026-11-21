@@ -39,7 +39,8 @@ static func send(url: String) -> String:
 	var how = JavaScriptBridge.eval(SEND % JSON.stringify(url), true)
 	return how if typeof(how) == TYPE_STRING else ""
 
-## Whether the clipboard has taken the link `send` was copying.
+## Whether the clipboard has taken the link `send` copied last: an earlier copy
+## answering late — another room's link — does not count.
 static func copied() -> bool:
 	if not OS.has_feature("web"):
 		return false
@@ -51,9 +52,12 @@ const SEND := """(function (url) {
     return 'shared';
   }
   if (navigator.clipboard) {
+    var mine = (window.base13LinkCopy || 0) + 1;
+    window.base13LinkCopy = mine;
     window.base13LinkCopied = false;
-    navigator.clipboard.writeText(url).then(function () { window.base13LinkCopied = true; },
-      function () {});
+    navigator.clipboard.writeText(url).then(function () {
+      if (window.base13LinkCopy === mine) window.base13LinkCopied = true;
+    }, function () {});
     return 'copying';
   }
   return '';
