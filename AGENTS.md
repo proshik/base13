@@ -601,7 +601,10 @@ Rakes we have already stepped on:
   `web (chrome, macos)`, where a phone reads `web_ios (safari, ios)`.
 - **NO SUCH ROOM on a code typed on an iPhone is still unexplained.** The room was alive,
   the server matches the code exactly, and the client sends only a full six-character
-  code, so some other six characters went out — the log does not say which.
+  code, so some other six characters went out — and the log did not say which. A refused
+  join now names its code, `refused (join TGAKGB): …`, when it is six capitals or
+  digits — the O and 0 a code never uses included, since that is the slip to see — and
+  `other` otherwise.
 
 ## Conventions
 
