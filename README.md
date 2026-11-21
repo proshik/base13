@@ -539,10 +539,12 @@ then both sides dial out, and the local network has nothing to do with it.
 
 ### Playing from a phone
 
-The web build plays in a phone's browser. On a touch screen the field sits on top, upright
-or turned, and a panel below it holds a fixed cross on the left, START in the middle and
-FIRE on the right. START pauses; the menu offers `1 PLAYER` and `NETWORK`, and in a
-browser the network screen has no `LAN` entries. A room waiting for its partner shares itself: FIRE opens the
+The web build plays in a phone's browser. Held upright, the field sits on top and a
+panel below it holds a fixed cross on the left, START in the middle and FIRE on the
+right. Turned on its side, the field stands in the middle with the cross in the strip to
+its left and FIRE in the strip to its right, START at the top of that strip. START
+pauses; the menu offers `1 PLAYER` and `NETWORK`, and in a browser the network screen
+has no `LAN` entries. A room waiting for its partner shares itself: FIRE opens the
 system's share sheet with a link `https://…/?room=CODE`, and a link like that opens the
 join screen with the code filled in — FIRE joins. A code typed by hand goes into the box
 under `ROOM CODE`: tap it and the system keyboard comes up. Added to the home screen,

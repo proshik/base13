@@ -214,6 +214,7 @@ Content generators — everything is our own, everything from text sources:
 | `tools/build.sh` | Builds for three platforms |
 | `tools/phone.sh` | `just phone`: the web build over https on this Mac's Wi-Fi address, for a phone |
 | `tools/test_code_field.mjs` | A browser check of the room code field over CDP, against a running web build |
+| `tools/test_room_link_copy.mjs` | A browser check that LINK COPIED waits for the clipboard to take the link |
 | `tools/haptics-check.html`, `tools/test_haptics_check.mjs` | The finished experiment with vibration on an iPhone, and its browser check |
 
 There is one way into the simulation: `GameSim.new(level, seed, config, level_number,
@@ -594,6 +595,11 @@ Rakes we have already stepped on:
   reads a tap a frame later, so a field the game focuses sits with no keyboard: the room
   code is a real page field, placed exactly where the code is drawn — a drawn code
   beside a field off at the top of the page left a player tapping the drawing.
+- **A menu over the game is driven with the tank's own buttons.** On a phone the pause
+  and LEAVE MATCH are chosen with the stick and FIRE, and LEAVE MATCH keeps the ticks
+  running: its presses drove the tank, and the FIRE that chose RESUME, still down, fired.
+  While a menu shows, player one's held buttons are the menu's, and after it whatever is
+  still down stays the menu's until let go (`InputSource.menu_shown`).
 - **A `%` in a script formatted with `%` breaks it**: the code field's CSS `50%` stopped
   the planned field from opening. Write it `%%`.
 - **Who joined is read from the server's join line, not from what was said.** On
