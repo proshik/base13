@@ -6,7 +6,9 @@ extends Node
 ## focused inside the tap itself, and the engine reads a tap a frame later, so a
 ## field the game focused would sit there with no keyboard.
 ##
-## What is typed comes back as it is; the screen cleans it.
+## What is typed is cleaned on the page before it is cut to six: a pasted
+## `ABC-234` cut first would lose its last character to the dash. The screen
+## cleans it again, as it cleans a key or a link.
 
 signal changed(text: String)
 signal submitted(text: String)
@@ -60,7 +62,6 @@ const OPEN := """(function (id, text) {
   var f = document.createElement('input');
   f.id = id;
   f.value = text;
-  f.maxLength = 6;
   f.placeholder = 'TAP HERE';
   f.setAttribute('aria-label', 'Room code');
   f.autocapitalize = 'characters';
@@ -73,7 +74,11 @@ const OPEN := """(function (id, text) {
     'border:2px solid #fff;border-radius:0;';
   f.addEventListener('focus', function () { f.placeholder = ''; });
   f.addEventListener('blur', function () { f.placeholder = 'TAP HERE'; });
-  f.addEventListener('input', function () { window.roomCodeInput(f.value); });
+  f.addEventListener('input', function () {
+    var clean = f.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6);
+    if (clean !== f.value) f.value = clean;
+    window.roomCodeInput(f.value);
+  });
   f.addEventListener('keydown', function (e) {
     if (e.key === 'Enter') { e.preventDefault(); window.roomCodeEnter(f.value); }
   });

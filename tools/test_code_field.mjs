@@ -83,6 +83,12 @@ try {
   await touch(point.x, point.y);
   assert.equal(await evaluate('document.activeElement.id'), 'room-code-field');
   assert.equal(await evaluate('document.getElementById("room-code-field").placeholder'), '', 'A second tap hides the cue again');
+  // A code pasted with a separator keeps all six characters: cleaned first, cut after.
+  await send('Input.insertText', {text:'abc-234'});
+  assert.equal(await evaluate('document.getElementById("room-code-field").value'), 'ABC234', 'A pasted code lost a character');
+  await evaluate('document.getElementById("room-code-field").select()');
+  await send('Input.dispatchKeyEvent', {type:'keyDown', key:'Backspace', code:'Backspace', windowsVirtualKeyCode:8});
+  await send('Input.dispatchKeyEvent', {type:'keyUp', key:'Backspace', code:'Backspace', windowsVirtualKeyCode:8});
   // A short code is editable and must not start a connection on Enter.
   await send('Input.insertText', {text:'AB'});
   await send('Input.dispatchKeyEvent', {type:'keyDown', key:'Enter', code:'Enter', windowsVirtualKeyCode:13});
