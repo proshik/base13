@@ -598,8 +598,13 @@ Rakes we have already stepped on:
 - **A menu over the game is driven with the tank's own buttons.** On a phone the pause
   and LEAVE MATCH are chosen with the stick and FIRE, and LEAVE MATCH keeps the ticks
   running: its presses drove the tank, and the FIRE that chose RESUME, still down, fired.
-  While a menu shows, player one's held buttons are the menu's, and after it whatever is
-  still down stays the menu's until let go (`InputSource.menu_shown`).
+  While a menu shows, the held buttons are the menu's, and what is down as it goes stays
+  the menu's until let go, for each player at one keyboard (`InputSource.menu_shown`).
+  Only what is down then: holding back everything until each button was seen let go
+  kept a direction taken up behind the STAGE caption, where no tick reads, out for good.
+- **A value written into a text field moves the caret to the end.** The room code field
+  cleans what is typed and writes it back only when that changed it, with the caret
+  put back among the characters kept, or a letter typed in the middle lands at the end.
 - **A `%` in a script formatted with `%` breaks it**: the code field's CSS `50%` stopped
   the planned field from opening. Write it `%%`.
 - **Who joined is read from the server's join line, not from what was said.** On
