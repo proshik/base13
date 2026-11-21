@@ -687,7 +687,11 @@ func (s *server) greet(conn *Conn, r *http.Request) (*Room, *Member, error) {
 		return nil, nil, errNoSuchRoom
 	}
 	if err != nil {
-		log.Printf("refused (%s): %s", request.Action, err)
+		what := request.Action
+		if request.Action == "join" {
+			what += " " + codeLabel(request.Code)
+		}
+		log.Printf("refused (%s): %s", what, err)
 		s.refuse(conn, refusalReason(err), err.Error(), reasonCode(err))
 		return nil, nil, err
 	}

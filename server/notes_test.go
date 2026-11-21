@@ -68,6 +68,35 @@ func waitForLine(t *testing.T, captured *lockedBuffer, pattern string) {
 	}
 }
 
+func TestARefusedJoinSaysTheCode(t *testing.T) {
+	// A phone got "no room" for a room that was alive, twice, and the log could
+	// not say what it had sent. The code is written when it is shaped like one —
+	// six capitals or digits, the ones a code never uses among them, since a
+	// typed O for a 0 is exactly the slip to see — and as other otherwise: it is
+	// a stranger's text, and a line break in it would write a line of its own.
+	captured := captureLog(t)
+	s := &server{hub: NewHub()}
+	addr, stop := serve(t, s)
+	defer stop()
+	for _, c := range []struct{ sent, logged string }{
+		{"TGAKGB", "TGAKGB"},
+		{"O0I1QZ", "O0I1QZ"},
+		{"tgak6b", "other"},
+		{"TGAK6", "other"},
+		{"AB\nroom", "other"},
+		{"", "other"},
+	} {
+		knock := dial(t, addr)
+		knock.sendJSON(t, hello{Action: "join", Game: "tanks", Code: c.sent})
+		if answer := knock.welcome(t); answer.OK {
+			t.Fatalf("a join with %q was let in", c.sent)
+		}
+		knock.conn.Close()
+		waitForLine(t, captured, `refused \(join `+c.logged+`\): no room with that code\n`)
+		captured.Reset()
+	}
+}
+
 func TestWelcomeAnnouncesNotes(t *testing.T) {
 	// A server from before notes reads the current report shape as malformed and
 	// a note as nothing it knows. So a client sends them only to a server whose

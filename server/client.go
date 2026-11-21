@@ -54,3 +54,17 @@ func gameLabel(sent string) string {
 	}
 	return "other"
 }
+
+// A code as the log may say it: six capitals or digits. Narrower would hide
+// the slip worth seeing — an O typed for a 0, which no code uses — and wider
+// would let a stranger's text into the line.
+var codeShape = regexp.MustCompile(`^[A-Z0-9]{6}$`)
+
+// codeLabel folds the code a refused join named: kept when it is shaped like a
+// code, other when it is anything else.
+func codeLabel(sent string) string {
+	if codeShape.MatchString(sent) {
+		return sent
+	}
+	return "other"
+}
