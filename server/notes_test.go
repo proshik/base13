@@ -97,6 +97,22 @@ func TestARefusedJoinSaysTheCode(t *testing.T) {
 	}
 }
 
+func TestAJoinToAFullRoomSaysTheCode(t *testing.T) {
+	// A third player at a room that is alive is refused too, and is as much a
+	// join that did not happen.
+	captured := captureLog(t)
+	s := &server{hub: NewHub()}
+	addr, stop := serve(t, s)
+	defer stop()
+	_, _, code := seatPair(t, addr)
+	third := dial(t, addr)
+	third.sendJSON(t, hello{Action: "join", Game: "tanks", Code: code})
+	if answer := third.welcome(t); answer.OK {
+		t.Fatalf("a third player was let in")
+	}
+	waitForLine(t, captured, `refused \(join `+code+`\): room is already full\n`)
+}
+
 func TestWelcomeAnnouncesNotes(t *testing.T) {
 	// A server from before notes reads the current report shape as malformed and
 	// a note as nothing it knows. So a client sends them only to a server whose

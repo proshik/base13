@@ -687,11 +687,7 @@ func (s *server) greet(conn *Conn, r *http.Request) (*Room, *Member, error) {
 		return nil, nil, errNoSuchRoom
 	}
 	if err != nil {
-		what := request.Action
-		if request.Action == "join" {
-			what += " " + codeLabel(request.Code)
-		}
-		log.Printf("refused (%s): %s", what, err)
+		logRefusal(request, err)
 		s.refuse(conn, refusalReason(err), err.Error(), reasonCode(err))
 		return nil, nil, err
 	}
@@ -701,6 +697,7 @@ func (s *server) greet(conn *Conn, r *http.Request) (*Room, *Member, error) {
 		if err != nil {
 			// A room found by its code has only one way to turn a member away:
 			// both seats are taken.
+			logRefusal(request, err)
 			s.refuse(conn, "full", err.Error(), reasonCode(err))
 			return nil, nil, err
 		}
@@ -771,6 +768,15 @@ func (s *server) refuse(conn *Conn, reason, explanation, code string) {
 	conn.WriteText(body)
 	conn.CloseWith(closePolicy, code)
 	conn.drain()
+}
+
+// logRefusal writes a hello the hub turned away, a join with the code it named.
+func logRefusal(request hello, err error) {
+	what := request.Action
+	if request.Action == "join" {
+		what += " " + codeLabel(request.Code)
+	}
+	log.Printf("refused (%s): %s", what, err)
 }
 
 // refusalReason names the counted reason for an error the hub refused with.
