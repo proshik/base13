@@ -78,6 +78,18 @@ func test_a_network_game_reads_the_first_layout_only() -> void:
 	net.capture(FIRST)
 	assert_eq(wire.sent[Rollback.START], 0)
 
+func test_a_button_pressed_after_the_menu_is_held_at_once() -> void:
+	# Only what was down as the menu went stays the menu's: a direction taken up
+	# afterwards — before any tick read it — is the tank's.
+	var net := _net()
+	net.menu_shown(true)
+	net.menu_shown(false)
+	held[0] = Types.IN_LEFT
+	net.capture(FIRST)
+	net.capture(FIRST + 1)
+	assert_eq(wire.sent[Rollback.START], Types.IN_LEFT, "a fresh hold was taken for the menu's")
+	assert_eq(wire.sent[Rollback.START + 1], Types.IN_LEFT)
+
 func test_a_menu_over_the_game_keeps_its_buttons() -> void:
 	# LEAVE MATCH is chosen with the stick and FIRE while the ticks go on: what
 	# chooses must not drive the tank, and FIRE still down after RESUME must not

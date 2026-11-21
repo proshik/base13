@@ -80,6 +80,24 @@ func test_fire_that_resumed_does_not_fire_until_let_go() -> void:
 	assert_eq(source.inputs_for(0)[0] & Types.IN_FIRE, Types.IN_FIRE, "a fresh press was held back")
 	Input.action_release(&"touch_fire")
 
+class _Held extends LocalInput:
+	var now := [0, 0]
+	func _held_now(player: int) -> int:
+		return now[player]
+
+func test_the_second_player_resuming_does_not_fire_either() -> void:
+	# At one keyboard either player may answer the pause; the one who did must
+	# not fire with the key that answered.
+	var source := _Held.new()
+	source.menu_shown(true)
+	source.now[1] = Types.IN_FIRE
+	source.menu_shown(false)
+	assert_eq(source.inputs_for(0)[1], 0, "player two's RESUME fired")
+	source.now[1] = 0
+	source.inputs_for(0)
+	source.now[1] = Types.IN_FIRE | Types.IN_UP
+	assert_eq(source.inputs_for(0)[1], Types.IN_FIRE | Types.IN_UP, "a fresh press was held back")
+
 class _Quiet extends Link:
 	pass
 

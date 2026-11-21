@@ -9,22 +9,29 @@ class_name InputSource
 ## for and nobody to send to.
 
 ## A menu over the game — the pause, LEAVE MATCH — is driven with the same
-## stick and FIRE as the tank. While it shows, player one's held buttons are the
-## menu's; once it goes, whatever is still down stays the menu's until let go,
-## or the FIRE that chose RESUME fires.
+## stick and FIRE as the tank, by either player at one keyboard. While it shows,
+## the held buttons are the menu's; what is still down as it goes stays the
+## menu's until let go, or the FIRE that chose RESUME fires. A button taken up
+## after that is the tank's at once.
 var _menu := false
-var _held_back := 0
+var _held_back := [0, 0]
 
 func menu_shown(shown: bool) -> void:
 	_menu = shown
-	_held_back = Types.IN_UP | Types.IN_DOWN | Types.IN_LEFT | Types.IN_RIGHT | Types.IN_FIRE
+	if not shown:
+		for player in _held_back.size():
+			_held_back[player] = _held_now(player)
 
-## Player one's held buttons, less what the menu still holds.
-func _own(held: int) -> int:
+## What a player holds right now, on every device of theirs.
+func _held_now(player: int) -> int:
+	return Keyboard.bits(player) | Gamepad.bits(player) | (Touch.bits() if player == 0 else 0)
+
+## A player's held buttons, less what the menu still holds.
+func _own(held: int, player := 0) -> int:
 	if _menu:
 		return 0
-	_held_back &= held
-	return held & ~_held_back
+	_held_back[player] &= held
+	return held & ~_held_back[player]
 
 ## Once per frame: pump the network and parse what arrived. Separate from the
 ## ticks, because a frame may produce none of them while the link still has to be

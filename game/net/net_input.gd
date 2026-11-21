@@ -176,8 +176,16 @@ func _read_bits(now: int) -> int:
 	if _bits_provider.is_valid():
 		held = _bits_provider.call(now)
 	else:
-		held = Keyboard.bits(0) | Gamepad.bits(0) | Touch.bits()
+		held = _held_now(0)
 	return _own(held) | PressLatch.take(0)
+
+## Both sides play with player one's buttons; nobody here is player two.
+func _held_now(player: int) -> int:
+	if player != 0:
+		return 0
+	if _bits_provider.is_valid():
+		return _bits_provider.call(_sent_through)
+	return super(player)
 
 func can_predict(tick: int) -> bool:
 	if desynced:
