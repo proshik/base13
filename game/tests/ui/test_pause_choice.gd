@@ -65,6 +65,39 @@ func test_fire_in_play_is_not_a_choice() -> void:
 	assert_signal_not_emitted(screen, "finished")
 	assert_false(screen._paused)
 
+func test_fire_that_resumed_does_not_fire_until_let_go() -> void:
+	screen = _build()
+	var source := LocalInput.new()
+	screen.use_input(source)
+	screen._unhandled_input(_action(&"touch_start"))
+	Input.action_press(&"touch_fire")
+	screen._unhandled_input(_action(&"touch_fire"))
+	assert_false(screen._paused)
+	assert_eq(source.inputs_for(0)[0] & Types.IN_FIRE, 0, "RESUME fired")
+	Input.action_release(&"touch_fire")
+	assert_eq(source.inputs_for(0)[0] & Types.IN_FIRE, 0)
+	Input.action_press(&"touch_fire")
+	assert_eq(source.inputs_for(0)[0] & Types.IN_FIRE, Types.IN_FIRE, "a fresh press was held back")
+	Input.action_release(&"touch_fire")
+
+class _Quiet extends Link:
+	pass
+
+func test_leave_match_does_not_latch_its_presses() -> void:
+	screen = _build()
+	screen.use_input(NetInput.new(_Quiet.new(), 0, func(_t: int) -> int: return 0))
+	screen._unhandled_input(_action(&"touch_start"))
+	assert_true(screen._leaving)
+	PressLatch.clear()
+	for child in screen.get_children():
+		if child is PressFeed:
+			child._input(_action(&"touch_fire"))
+			var up := _action(&"touch_fire")
+			up.pressed = false
+			child._input(up)
+	assert_eq(PressLatch.take(0), 0, "a tap on RESUME was kept for the tank")
+	PressLatch.clear()
+
 func test_the_items_can_be_drawn() -> void:
 	for text in PauseOverlay.ITEMS:
 		for i in text.length():

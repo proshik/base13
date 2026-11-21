@@ -177,7 +177,7 @@ func _read_bits(now: int) -> int:
 		held = _bits_provider.call(now)
 	else:
 		held = Keyboard.bits(0) | Gamepad.bits(0) | Touch.bits()
-	return held | PressLatch.take(0)
+	return _own(held) | PressLatch.take(0)
 
 func can_predict(tick: int) -> bool:
 	if desynced:

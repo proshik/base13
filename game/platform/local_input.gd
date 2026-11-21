@@ -8,6 +8,6 @@ extends InputSource
 
 func inputs_for(_tick: int) -> Array[int]:
 	return [
-		Keyboard.bits(0) | Gamepad.bits(0) | Touch.bits() | PressLatch.take(0),
+		_own(Keyboard.bits(0) | Gamepad.bits(0) | Touch.bits()) | PressLatch.take(0),
 		Keyboard.bits(1) | Gamepad.bits(1) | PressLatch.take(1),
 	] as Array[int]

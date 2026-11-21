@@ -60,7 +60,7 @@ func _ready() -> void:
 	# world moved again. A stand too short for a caption keeps them.
 	add_child(PressFeed.new(func() -> bool:
 		return (_phase == Phase.PLAY or _phase == Phase.OUTRO) and not _paused \
-			and _status == ""))
+			and not _leaving and _status == ""))
 
 ## The input source comes from outside: in a single-player game it stays the
 ## keyboard, in a network game it becomes the network input. The screen knows
@@ -180,11 +180,13 @@ func _on_escape() -> void:
 		return
 	_leaving = not _leaving
 	_choice = 0
+	_input.menu_shown(_leaving)
 	_pause.set_shown(_leaving, PauseOverlay.Kind.LEAVE)
 
 func _toggle_pause() -> void:
 	_paused = not _paused
 	_choice = 0
+	_input.menu_shown(_paused)
 	_pause.set_shown(_paused)
 	# The engine falls silent while paused: a continuous hum over a stopped game
 	# sounds like a hang.

@@ -8,6 +8,24 @@ class_name InputSource
 ## default behaviour is the single-player one, where there is nothing to wait
 ## for and nobody to send to.
 
+## A menu over the game — the pause, LEAVE MATCH — is driven with the same
+## stick and FIRE as the tank. While it shows, player one's held buttons are the
+## menu's; once it goes, whatever is still down stays the menu's until let go,
+## or the FIRE that chose RESUME fires.
+var _menu := false
+var _held_back := 0
+
+func menu_shown(shown: bool) -> void:
+	_menu = shown
+	_held_back = Types.IN_UP | Types.IN_DOWN | Types.IN_LEFT | Types.IN_RIGHT | Types.IN_FIRE
+
+## Player one's held buttons, less what the menu still holds.
+func _own(held: int) -> int:
+	if _menu:
+		return 0
+	_held_back &= held
+	return held & ~_held_back
+
 ## Once per frame: pump the network and parse what arrived. Separate from the
 ## ticks, because a frame may produce none of them while the link still has to be
 ## serviced — otherwise the connection seizes up.

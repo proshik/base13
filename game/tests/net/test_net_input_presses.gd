@@ -77,3 +77,25 @@ func test_a_network_game_reads_the_first_layout_only() -> void:
 	_tap(KEY_W)
 	net.capture(FIRST)
 	assert_eq(wire.sent[Rollback.START], 0)
+
+func test_a_menu_over_the_game_keeps_its_buttons() -> void:
+	# LEAVE MATCH is chosen with the stick and FIRE while the ticks go on: what
+	# chooses must not drive the tank, and FIRE still down after RESUME must not
+	# fire until it is let go.
+	var net := _net()
+	held[0] = Types.IN_FIRE | Types.IN_DOWN
+	net.menu_shown(true)
+	net.capture(FIRST)
+	net.menu_shown(false)
+	net.capture(FIRST + 1)
+	held[0] = Types.IN_FIRE
+	net.capture(FIRST + 2)
+	held[0] = 0
+	net.capture(FIRST + 3)
+	held[0] = Types.IN_FIRE | Types.IN_DOWN
+	net.capture(FIRST + 4)
+	var start := Rollback.START
+	assert_eq(wire.sent[start], 0, "the menu's buttons drove the tank")
+	assert_eq(wire.sent[start + 1], 0, "the button that resumed fired")
+	assert_eq(wire.sent[start + 2], 0, "FIRE still down after RESUME fired")
+	assert_eq(wire.sent[start + 4], Types.IN_FIRE | Types.IN_DOWN, "a fresh press was held back")
