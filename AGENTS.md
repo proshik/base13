@@ -27,7 +27,7 @@ Application identifier: `com.proshik.base13`.
 - Rollback plan: `docs/plans/2026-09-16-rollback.md`
 - Phone browser design (touch controls, the upright layout, room links, the home
   screen): `docs/specs/2026-09-28-mobile-web-design.md`
-- Phone browser plan: `docs/plans/2026-09-28-mobile-web.md`
+- Phone browser plan (closed, shipped in `0.7.0`): `docs/plans/2026-09-28-mobile-web.md`
 
 The work is split into four subprojects: **1** the core and the single-player game,
 **2** mobile platforms, **3** network co-op, **4** release to the stores.
