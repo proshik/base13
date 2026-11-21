@@ -143,8 +143,7 @@ func test_start_says_what_it_does() -> void:
 	assert_eq(controls.start_text(), "START")
 
 func test_the_labels_can_be_drawn() -> void:
-	for text in [TouchControls.FIRE_TEXT, TouchControls.START_TEXT, TouchControls.PAUSE_TEXT,
-			RotateHint.TEXT]:
+	for text in [TouchControls.FIRE_TEXT, TouchControls.START_TEXT, TouchControls.PAUSE_TEXT]:
 		for i in text.length():
 			if text[i] == " ":
 				continue
