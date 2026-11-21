@@ -44,7 +44,7 @@ descriptions, and the level layouts are ours. No Namco/Bandai assets or maps are
 | Browser on a phone | plays with touch controls; checked on an iPhone in Safari |
 | Co-op: quick game, room by code, local network | works |
 | Room server and game hosting in one image | works |
-| Public server on the internet | needs a machine with an address — the code is there |
+| Public server on the internet | runs at `https://base13.proshik.ru/` |
 | Android, iOS | subproject 2 |
 | App Store, Google Play | subproject 4 |
 
@@ -677,7 +677,7 @@ and downloading them every time takes longer than everything else put together.
 - [Quick game and image design](docs/specs/2026-09-03-quick-game-design.md) —
   matchmaking, static hosting, Docker
 - [Deployment plan](docs/plans/2026-09-04-deployment.md) —
-  the image on a public machine behind a proxy; next up, not yet done
+  the image on a public machine behind a proxy; it runs at `base13.proshik.ru`
 - [Network lag plan](docs/plans/2026-09-14-network-lag.md) —
   the adaptive input delay of `0.5.0`, since replaced by rollback
 - [Metrics plan](docs/plans/2026-09-14-metrics.md) —

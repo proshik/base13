@@ -16,11 +16,12 @@ Application identifier: `com.proshik.base13`.
 - Co-op design (stage 3.1): `docs/specs/2026-08-31-lockstep-design.md`
 - Rooms and relay design (stages 3.2–3.3): `docs/specs/2026-09-01-platform-design.md`
 - Quick game and image design (stage 3.4): `docs/specs/2026-09-03-quick-game-design.md`
-- Deployment plan (next up): `docs/plans/2026-09-04-deployment.md`
+- Deployment plan (the image runs at `base13.proshik.ru` since 2026-09-14):
+  `docs/plans/2026-09-04-deployment.md`
 - Hardening plan (closed, gates the deployment's release): `docs/plans/2026-09-12-hardening.md`
 - Homebrew cask plan (after the deployment): `docs/plans/2026-09-04-homebrew-cask.md`
 - Network lag plan (adaptive delay, carried between levels; shipped in `0.5.0`, the live
-  check waits for a public machine): `docs/plans/2026-09-14-network-lag.md`
+  check is not recorded here): `docs/plans/2026-09-14-network-lag.md`
 - Metrics plan (closed, shipped in `0.5.0`): `docs/plans/2026-09-14-metrics.md`
 - Rollback design (replaces lockstep in network play): `docs/specs/2026-09-16-rollback-design.md`
 - Rollback plan: `docs/plans/2026-09-16-rollback.md`
@@ -40,13 +41,14 @@ network directly — closed; **3.2** the room server and entry by code — close
 **3.3** the journal and coming back after a drop — closed; **3.4** quick game, static
 hosting and the image — closed.
 
-There is enough code to play over the internet; what is missing is a machine with a
-public address. Accounts are deferred — the chosen shape of public play (one button, no
-list and no names) does not require them.
+The game is played over the internet at `https://base13.proshik.ru/`: one container from
+the registry behind the owner's proxy, deployed since 2026-09-14 with Krill as the app
+`side/prod/base13` — a new release goes there by its image tag. TLS and DNS are the
+owner's. A deploy restarts the server and ends every match in progress: the journal lives
+in memory. Accounts are deferred — the chosen shape of public play (one button, no list and
+no names) does not require them.
 
-**Next up: deployment on a public machine** —
-`docs/plans/2026-09-04-deployment.md`. One container from the registry behind the owner's
-proxy; TLS and DNS are the owner's. That plan opens with a real defect it found: Godot
+**Deployment** — `docs/plans/2026-09-04-deployment.md`. That plan opens with a real defect it found: Godot
 leaves `WebSocketPeer.heartbeat_interval` at zero, so a client waiting for a partner
 sends nothing and a proxy cuts the connection — invisible on the local network, certain
 behind nginx.
@@ -88,12 +90,13 @@ platform and the browser, the window line carries the last round trip from the f
 on seating, and nothing a stranger writes reaches the log as written.
 Earlier releases are superseded.
 The image is built for amd64 only; on an arm64 Mac run it with `--platform linux/amd64`.
-The package is public and pulls without a login. What is left of the deployment plan is a
-machine to put it on; run the image with the metrics port as the plan's Task 4 shows.
+The package is public and pulls without a login. Run the image with the metrics port as
+the deployment plan's Task 4 shows.
 
-Nobody has yet played the rollback over the internet: it is proven by the lag profiles
-and by a match against a `0.5.0` client, not by two people at two laptops. That check
-waits for the public machine.
+The rollback is proven by the lag profiles and by a match against a `0.5.0` client; a
+match by two people at two laptops through the public server is not recorded here. Play
+from a phone was checked live only on the local network (`just phone`), not yet on the
+public server.
 
 **After it: installation through Homebrew** —
 `docs/plans/2026-09-04-homebrew-cask.md`. Gated on two things only the repository owner
