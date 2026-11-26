@@ -1,8 +1,9 @@
 # Prometheus scraping the room server on the same machine.
 #
 # The server exposes its figures only when METRICS_ADDR is set, on a port of its
-# own that the proxy in front never forwards: the README's "Metrics" section says
-# how to run it. This file is a whole configuration, so it can be checked as it is
+# own that the proxy in front never forwards: the "Metrics" section of
+# docs/room-server.md says how to run it. This file is a whole configuration, so it
+# can be checked as it is
 # (promtool check config scrape.yml); to add the job to a Prometheus that already
 # runs, copy the scrape_configs entry and the rule_files line.
 #
