@@ -56,7 +56,7 @@ The server comes up on one of them, and both clients go to it.
 On laptop A:
 
 ```bash
-ipconfig getifaddr en0        # your address, for example 192.168.31.234
+ipconfig getifaddr en0        # your address, for example 192.168.1.20
 cd server && go run . -addr=:27014
 godot --path game             # in another window; the server is local, nothing to find
 ```
@@ -64,8 +64,8 @@ godot --path game             # in another window; the server is local, nothing 
 On laptop B:
 
 ```bash
-curl http://192.168.31.234:27014/health  # first make sure the server is visible
-godot --path game -- --relay=ws://192.168.31.234:27014/ws
+curl http://192.168.1.20:27014/health  # first make sure the server is visible
+godot --path game -- --relay=ws://192.168.1.20:27014/ws
 ```
 
 Then: A picks `CREATE ROOM` and reads out the code, B picks `JOIN ROOM` and enters it.
