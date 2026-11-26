@@ -21,15 +21,18 @@ and keep the enemy away from your base.
 
 <p align="center">No install: the game runs in a desktop or phone browser, alone or with a partner.</p>
 
-> **Status: playable on desktop and in the browser, two players over the network.**
+> **Status: playable on desktop, in the browser and in a phone's browser, two players
+> over the network.**
 > Core, rendering, input, a 35-level campaign, NES-chip-style sound, splash screen,
-> menu, pause, stats, high score, gamepad, builds for three platforms and the web.
+> menu, pause, stats, high score, gamepad, builds for three platforms and the web,
+> touch controls in a phone's browser.
 > Two-player co-op: a room by code through our own server, or a direct connection
 > on the local network; a dropped connection is survivable — the match catches up
 > from the journal.
 >
 > The room server also serves the game itself, packs into a Docker image and deploys
-> with a single command. Next up: mobile platforms and the stores.
+> with a single command. Next up: installation on macOS through Homebrew; native
+> Android and iOS builds and the stores are later subprojects.
 
 ## Platforms
 
