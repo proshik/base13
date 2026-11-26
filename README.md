@@ -699,3 +699,7 @@ and downloading them every time takes longer than everything else put together.
 An independent implementation. Battle City is a trademark and a copyrighted work of
 Namco/Bandai Namco Entertainment; this project is not affiliated with them and is not
 endorsed by them. The graphics, sound and level layouts were created from scratch.
+
+The code and the original assets are released under the MIT License — see
+[LICENSE](LICENSE). The bundled GUT test framework in `game/addons/gut` keeps its own
+license: [`game/addons/gut/LICENSE.md`](game/addons/gut/LICENSE.md).
